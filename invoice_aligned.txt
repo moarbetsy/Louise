@@ -1,0 +1,65 @@
+INVOICE
+
+Date: September 14, 2025
+
+
+Date       | Products                  | Quantity          | Amount ($)
+-----------|---------------------------|-------------------|----------
+2025-03-04 | Cialis, Viagra, K         | 6, 12, 2 fioles   | 222
+2025-03-05 | MD                        | 15                | 75
+2025-03-13 | MD, Viagra noir, Fiole.   | 12, 6, 1          | 150
+2025-03-16 | MD, Viagra noir, Weed     | 24, 6, 7g         | 249
+2025-03-31 | Weed, Viagra noir, MDMA   | 3 onces, 6, 12    | 402
+2025-04-01 | MD, Poppers               | 30, 1             | 255
+2025-04-03 | MD, Viagra noir           | 24, 4             | 188
+2025-04-04 | MD, Viagra                | 12, 4             | 135
+2025-04-05 | MD                        | 16                | 96
+2025-04-07 | MD, Viagra noir           | 24, 4             | 184
+2025-04-09 | MD, Viagra noir           | 16, 4             | 136
+2025-04-11 | MD, Weed                  | 16, 1 once        | 186
+2025-04-12 | MD                        | 16                | 96
+2025-04-13 | MD, Viagra noir           | 12, 2             | 92
+2025-04-16 | MD, Viagra noir           | 12, 2             | 92
+2025-04-17 | MD, Viagra noir, Weed     | 24, 2, 2 onces    | 344
+2025-04-29 | MD, Viagra noir           | 27, 4             | 202
+2025-05-01 | MD, Poppers               | 18, 2             | 258
+2025-05-04 | MD, Viagra noir, Speed    | 24, 4, 4          | 232
+2025-05-08 | MD, Extasy, Viagra        | 12, 4, 4          | 230
+2025-05-13 | Coke, MD, Viagra          | 2g, 8, 4          | 288
+2025-05-27 | Weed, MDMA                | 1 once, 14        | 174
+2025-05-29 | Weed, MDMA                | 1 once, 14        | 174
+2025-05-30 | MDMA, Vialis              | 12, 8             | 136
+2025-05-31 | MDMA, Vialis              | 18, 4             | 140
+2025-06-05 | Weed, MD                  | 2 onces, 16       | 276
+2025-06-07 | MDMA                      | 16                | 96
+2025-06-09 | MD, Viagra noir, T, K     | 15, 10, 3.5g, 1g  | 395
+2025-06-12 | MDMA, Viagra noir         | 16, 4             | 136
+2025-06-15 | Weed, MDMA                | 3 onces, 7        | 312
+2025-06-16 | MD                        | 9                 | 54
+2025-06-19 | MD, Viagra                | 40, 6             | 300
+2025-06-24 | MD                        | 16                | 96
+2025-06-25 | MD, Viagra noir           | 8, 6              | 108
+2025-06-26 | MD                        | 18                | 108
+2025-06-28 | MD, Weed                  | 12, 2 onces       | 252
+2025-06-30 | MD, Viagra                | 21, 4             | 166
+2025-07-02 | MDMA, Viagra              | 22, 6             | 192
+2025-07-14 | MD, Viagra, GH            | 12, 4, 60ml       | 232
+2025-07-16 | M,W,Via,Cia,GH            | 16, 1oz,6,4,30ml  | 330
+2025-07-18 | MD/Viagra/GH/Pipe/T/Cialis| 16,4,60ml,1,      | 400
+2025-07-20 | MDMA,Coke,GH,Cia,Via      | 12, 1g, 60ml, 4,4 | 328
+2025-07-21 | Weed, MDMA                | 1 onces, 13       | 158
+2025-07-28 | GHB, Viagra, MDMA, Weed   | 60ml, 6, 16, 2oz  | 466
+2025-08-09 | Weed                      | 3 onces           | 285
+2025-08-19 | Weed                      | 2 onces           | 190
+
+--------------------------------------------------
+Total Charges: $9,217.00
+--------------------------------------------------
+
+Payment Received
+Amount: $8,273.00
+
+--------------------------------------------------
+Balance Due: $1,201.00
+--------------------------------------------------
+
