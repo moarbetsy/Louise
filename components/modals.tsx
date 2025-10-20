@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, type ReactNode, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Plus, Trash2, AlertTriangle, Info, ArrowLeft, Pencil, Check, ChevronDown } from 'lucide-react';
+import { X, Plus, Trash2, AlertTriangle, Info, ArrowLeft, Pencil, Check, ChevronDown, Bot, Mic, Square, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import type { Client, Product, Order, OrderItem, Expense, LogEntry, ProductTier, PaymentMethods, OrderAdjustment } from '../types';
 import { printOrderPdf } from '../lib/pdf';
-import { groupOrderItems, formatEntityDisplayId } from '../lib/utils';
+import { groupOrderItems, formatEntityDisplayId, calculateTieredPrice } from '../lib/utils';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 
 // Helper types
@@ -84,21 +84,22 @@ const ModalWrapper: React.FC<{
             className={`glass-wrap w-full ${sizeClasses[size]}`}
           >
             <div className="glass max-h-[90vh] flex flex-col">
-              <header className="flex items-center gap-3 p-4 border-b border-white/10 flex-shrink-0">
-                <div className="flex items-center gap-2">
-                  {actions}
-                </div>
-                <div className="flex-1 flex justify-center">
+              <header className="grid grid-cols-[auto_1fr_auto] items-center gap-3 p-4 border-b border-white/10 flex-shrink-0">
+                <button
+                  onClick={onClose}
+                  className="p-2 rounded-full text-muted hover:text-primary hover:bg-white/10 transition-colors"
+                  aria-label="Close"
+                >
+                  <X size={20} />
+                </button>
+                <div className="flex items-center justify-center">
                   {!hideTitle && title ? (
                     <h2 className="text-lg font-bold text-primary text-center">{title}</h2>
                   ) : null}
                 </div>
-                <button
-                  onClick={onClose}
-                  className="p-2 rounded-full text-muted hover:text-primary hover:bg-white/10 transition-colors"
-                >
-                  <X size={20} />
-                </button>
+                <div className="flex items-center justify-end gap-2">
+                  {actions}
+                </div>
               </header>
               <div className="p-6 overflow-y-auto">
                 {children}
@@ -110,6 +111,9 @@ const ModalWrapper: React.FC<{
     </AnimatePresence>
   );
 };
+
+const modalConfirmButtonClass = 'group flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 via-blue-500 to-indigo-500 text-white shadow-[0_16px_32px_-18px_rgba(37,99,235,0.85)] ring-1 ring-inset ring-white/15 transition-all duration-200 hover:shadow-[0_22px_42px_-16px_rgba(37,99,235,0.9)] hover:scale-[1.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200/90';
+const modalConfirmIconClass = 'drop-shadow-[0_6px_12px_rgba(15,23,42,0.35)] transition-transform duration-200 ease-out group-hover:scale-110';
 
 const FormRow = ({ children, className }: { children: ReactNode, className?: string }) => <div className={`flex flex-col gap-2 ${className || ''}`}>{children}</div>;
 const Label = ({ children, htmlFor }: { children: ReactNode, htmlFor?: string }) => <label htmlFor={htmlFor} className="text-sm font-medium text-muted cursor-pointer">{children}</label>;
@@ -134,9 +138,30 @@ const Input = React.forwardRef<
   );
 });
 
-const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(({ className, ...props }, ref) => (
-    <select ref={ref} {...props} className={`w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-base text-primary placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${className || ''}`} />
-));
+const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(
+  ({ className, value, defaultValue, children, ...props }, ref) => {
+    const resolvedValue = value ?? defaultValue ?? '';
+    const isPlaceholderSelected = resolvedValue === '' || resolvedValue === null;
+
+    return (
+      <div className={`relative w-full`}>
+        <select
+          ref={ref}
+          value={value}
+          defaultValue={defaultValue}
+          {...props}
+          className={`appearance-none w-full bg-white/5 border border-white/10 rounded-lg py-3 pl-4 pr-10 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${isPlaceholderSelected ? 'text-muted' : 'text-primary'} ${className || ''}`}
+        >
+          {children}
+        </select>
+        <ChevronDown
+          size={16}
+          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+        />
+      </div>
+    );
+  }
+);
 const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(({ className, ...props }, ref) => (
     <textarea ref={ref} {...props} className={`w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-base text-primary placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${className || ''}`} />
 ));
@@ -145,7 +170,7 @@ const Checkbox = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HT
       ref={ref}
       type="checkbox"
       {...props}
-      className={`w-5 h-5 rounded-md bg-white/10 border-white/20 text-indigo-500 focus:ring-indigo-500/50 disabled:cursor-not-allowed disabled:opacity-50 ${className || ''}`}
+      className={`custom-checkbox disabled:cursor-not-allowed disabled:opacity-60 ${className || ''}`}
     />
 ));
 const FormActions = ({ children }: { children: ReactNode }) => {
@@ -180,6 +205,7 @@ interface OrderFormState {
   items: OrderItem[];
   notes: string;
   date: string;
+  paymentDueDate: string;
   amountPaid: string;
   paymentMethods: PaymentMethods;
   fees: { amount: string; description: string };
@@ -405,22 +431,13 @@ const OrderForm: React.FC<{
       return null;
     }
 
-    if (sortedProductTiers.length === 0) {
+    const computed = calculateTieredPrice(selectedProduct.tiers, quantity, selectedProduct.costPerUnit);
+    if (!Number.isFinite(computed) || computed <= 0) {
       return null;
     }
 
-    const targetTier = sortedProductTiers.find(tier => quantity <= tier.quantity) ?? sortedProductTiers[sortedProductTiers.length - 1];
-    if (!targetTier || targetTier.quantity <= 0) {
-      return null;
-    }
-
-    const perUnit = targetTier.price / targetTier.quantity;
-    if (!Number.isFinite(perUnit) || perUnit <= 0) {
-      return null;
-    }
-
-    return Math.round(quantity * perUnit * 100) / 100;
-  }, [selectedProduct, sortedProductTiers]);
+    return computed;
+  }, [selectedProduct]);
 
   const groupedItems = useMemo(() => groupOrderItems(value.items, products), [value.items, products]);
   const selectedProductCounts = useMemo(() => {
@@ -466,6 +483,9 @@ const OrderForm: React.FC<{
   const balance = finalTotal - amountPaid;
   const amountDue = balance > 0 ? balance : 0;
   const changeDue = balance < 0 ? Math.abs(balance) : 0;
+  const isBalanceDue = amountDue > 0;
+  const displayedBalance = isBalanceDue ? amountDue : changeDue;
+  const balanceColorClass = isBalanceDue ? 'text-red-400' : 'text-emerald-400';
 
   const moneyFormatter = useMemo(() => new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }), []);
   const formatMoney = useCallback((value: number) => `$${moneyFormatter.format(Math.max(value, 0))}`, [moneyFormatter]);
@@ -541,52 +561,21 @@ const OrderForm: React.FC<{
   }, [value.paymentMethods.cash, value.paymentMethods.etransfer]);
 
   useEffect(() => {
-    if (!isCreateForm) return;
+    if (!isCreateForm || !hasManualPaymentEdit) return;
 
     const currentCash = Number(value.paymentMethods.cash) || 0;
     const currentEtransfer = Number(value.paymentMethods.etransfer) || 0;
-    const normalizedTotal = Number.isFinite(finalTotal) ? Number(finalTotal.toFixed(2)) : 0;
-
-    if (!value.items.length && normalizedTotal === 0 && currentCash === 0 && currentEtransfer === 0 && hasManualPaymentEdit) {
+    const hasNoPayments = currentCash === 0 && currentEtransfer === 0 && value.amountPaid === '';
+    if (value.items.length === 0 && hasNoPayments) {
       setHasManualPaymentEdit(false);
     }
-
-    if (hasManualPaymentEdit) return;
-
-    if (normalizedTotal <= 0) {
-      if (currentCash === 0 && currentEtransfer === 0 && value.amountPaid === '') {
-        return;
-      }
-      onChange({
-        ...value,
-        paymentMethods: { cash: 0, etransfer: 0 },
-        amountPaid: '',
-      });
-      return;
-    }
-
-    if (
-      currentCash === normalizedTotal &&
-      currentEtransfer === 0 &&
-      (Number(value.amountPaid) || 0) === normalizedTotal
-    ) {
-      return;
-    }
-
-    onChange({
-      ...value,
-      paymentMethods: { cash: normalizedTotal, etransfer: 0 },
-      amountPaid: String(normalizedTotal),
-    });
   }, [
-    finalTotal,
-    isCreateForm,
     hasManualPaymentEdit,
-    onChange,
-    value.paymentMethods.cash,
-    value.paymentMethods.etransfer,
+    isCreateForm,
     value.amountPaid,
     value.items.length,
+    value.paymentMethods.cash,
+    value.paymentMethods.etransfer,
   ]);
 
   const addItemToOrder = useCallback((product: Product, quantity: number, price: number, sizeLabel?: string) => {
@@ -749,6 +738,10 @@ const OrderForm: React.FC<{
       cash: method === 'cash' ? numeric : Number(value.paymentMethods.cash) || 0,
       etransfer: method === 'etransfer' ? numeric : Number(value.paymentMethods.etransfer) || 0,
     };
+    const existingDueDate = value.paymentDueDate?.trim() || (value.paymentMethods.dueDate ?? '');
+    if (existingDueDate) {
+      paymentMethods.dueDate = existingDueDate;
+    }
     const totalPaid = (paymentMethods.cash || 0) + (paymentMethods.etransfer || 0);
 
     setPaymentInputs(prev => ({ ...prev, [method]: sanitized }));
@@ -759,6 +752,23 @@ const OrderForm: React.FC<{
       ...value,
       paymentMethods,
       amountPaid: totalPaid ? String(totalPaid) : '',
+    });
+  };
+
+  const handlePaymentDueDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextValue = event.target.value;
+    const trimmed = nextValue.trim();
+    const nextPaymentMethods: PaymentMethods = {
+      cash: Number(value.paymentMethods.cash) || 0,
+      etransfer: Number(value.paymentMethods.etransfer) || 0,
+    };
+    if (trimmed) {
+      nextPaymentMethods.dueDate = trimmed;
+    }
+    onChange({
+      ...value,
+      paymentDueDate: trimmed,
+      paymentMethods: nextPaymentMethods,
     });
   };
 
@@ -777,19 +787,19 @@ const OrderForm: React.FC<{
   );
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(320px,1fr)]">
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
       <section className="space-y-6">
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-6 space-y-6">
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-2 sm:col-span-2">
+            <FormRow>
               <Select
                 id="client"
                 value={value.clientId}
                 onChange={event => onChange({ ...value, clientId: event.target.value })}
-                aria-label="Select client"
+                aria-label="Client"
               >
                 <option value="" disabled>
-                  Select Client
+                  Client
                 </option>
                 {clientOptions.map(client => (
                   <option key={client.id} value={client.id}>
@@ -797,11 +807,11 @@ const OrderForm: React.FC<{
                   </option>
                 ))}
               </Select>
-            </div>
-            <div className="flex flex-col gap-2 sm:col-span-2">
-              <Select id="product" value={newItem.productId} onChange={handleProductChange} aria-label="Select product">
+            </FormRow>
+            <FormRow>
+              <Select id="product" value={newItem.productId} onChange={handleProductChange} aria-label="Product">
                 <option value="" disabled>
-                  Select Product
+                  Product
                 </option>
                 {availableProducts.map(product => (
                   <option key={product.id} value={product.id}>
@@ -812,7 +822,7 @@ const OrderForm: React.FC<{
               {selectedProduct && (
                 <p className="text-xs text-muted">In stock: {formatStock(selectedProduct)}</p>
               )}
-            </div>
+            </FormRow>
             {showDateField && (
               <FormRow className="sm:col-span-2">
                 <Label htmlFor="date">Order Date</Label>
@@ -828,12 +838,12 @@ const OrderForm: React.FC<{
 
           {availableProducts.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-white/15 bg-black/20 px-4 py-6 text-center text-sm text-muted">
-              All products are currently unavailable. Restock items to create a new order.
+              No items added yet.
             </div>
           ) : selectedProduct ? (
             <div className="space-y-4">
               {sortedProductTiers.length ? (
-                <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(120px,1fr))]">
+                <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(110px,1fr))]">
                   {sortedProductTiers.map(tier => {
                     const normalizedSize = formatQuantity(tier.quantity, selectedProduct.type);
                     const isSelected = newItem.selectedTierLabel === tier.sizeLabel;
@@ -843,36 +853,36 @@ const OrderForm: React.FC<{
                         key={tier.sizeLabel}
                         type="button"
                         onClick={() => handleTierClick(tier)}
-                        className={`relative flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-2xl border px-3 py-3 text-center transition ${
+                        className={`relative flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl border px-3 py-3 text-center transition ${
                           isSelected
-                            ? 'border-indigo-400/60 bg-indigo-500/20 text-primary shadow-[0_8px_20px_-12px_rgba(99,102,241,0.9)]'
-                            : 'border-white/10 bg-black/20 text-muted hover:border-white/20 hover:text-primary hover:shadow-[0_10px_30px_-18px_rgba(15,118,110,0.7)]'
+                            ? 'border-emerald-400/60 bg-emerald-500/15 text-primary shadow-[0_8px_20px_-14px_rgba(16,185,129,0.8)]'
+                            : 'border-white/10 bg-black/20 text-muted hover:border-emerald-400/50 hover:text-primary hover:shadow-[0_10px_28px_-18px_rgba(16,185,129,0.6)]'
                         }`}
                       >
                         {tierCount > 0 && (
-                          <span className="absolute -top-2 -right-2 inline-flex min-w-[32px] items-center justify-center rounded-full bg-indigo-500 px-2 py-1 text-[11px] font-semibold text-white shadow-lg">
+                          <span className="absolute -top-2 -right-2 inline-flex min-w-[28px] items-center justify-center rounded-full bg-emerald-500 px-2 py-1 text-[10px] font-semibold text-white shadow-lg">
                             +{tierCount}
                           </span>
                         )}
-                        <span className="text-lg font-semibold text-primary leading-tight">{normalizedSize}</span>
+                        <span className="text-base font-semibold text-primary leading-tight">{normalizedSize}</span>
                       </button>
                     );
                   })}
                   <button
                     type="button"
                     onClick={handleSelectCustomSize}
-                    className={`relative flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-2xl border px-3 py-3 text-center transition ${
+                    className={`relative flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl border px-3 py-3 text-center transition ${
                       isCustomSelected
-                        ? 'border-indigo-400/60 bg-indigo-500/20 text-primary shadow-[0_8px_20px_-12px_rgba(99,102,241,0.9)]'
-                        : 'border-white/10 bg-black/20 text-muted hover:border-white/20 hover:text-primary hover:shadow-[0_10px_30px_-18px_rgba(15,118,110,0.7)]'
+                        ? 'border-emerald-400/60 bg-emerald-500/15 text-primary shadow-[0_8px_20px_-14px_rgba(16,185,129,0.8)]'
+                        : 'border-white/10 bg-black/20 text-muted hover:border-emerald-400/50 hover:text-primary hover:shadow-[0_10px_28px_-18px_rgba(16,185,129,0.6)]'
                     }`}
                   >
                     {customItemsCount > 0 && (
-                      <span className="absolute -top-2 -right-2 inline-flex min-w-[32px] items-center justify-center rounded-full bg-indigo-500 px-2 py-1 text-[11px] font-semibold text-white shadow-lg">
+                      <span className="absolute -top-2 -right-2 inline-flex min-w-[28px] items-center justify-center rounded-full bg-emerald-500 px-2 py-1 text-[10px] font-semibold text-white shadow-lg">
                         +{customItemsCount}
                       </span>
                     )}
-                    <span className="text-lg font-semibold text-primary leading-tight">Custom</span>
+                    <span className="text-base font-semibold text-primary leading-tight">Custom</span>
                   </button>
                 </div>
               ) : (
@@ -882,153 +892,176 @@ const OrderForm: React.FC<{
               )}
             </div>
           ) : null}
-        </div>
 
-        {selectedProduct && isCustomSelected && (
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-            <div className="flex flex-wrap items-end gap-4">
-              <FormRow className="flex-1 min-w-[160px]">
-                <Label htmlFor="custom-quantity">Quantity</Label>
-                <Input
-                  id="custom-quantity"
-                  type="number"
-                  step="any"
-                  min="0"
-                  value={newItem.quantity}
-                  onChange={event => handleNewItemManualChange('quantity', event.target.value)}
-                />
-              </FormRow>
-              <FormRow className="flex-1 min-w-[160px]">
-                <Label htmlFor="custom-price">Price</Label>
-                <Input
-                  id="custom-price"
-                  type="number"
-                  step="any"
-                  min="0"
-                  startAdornment="$"
-                  value={newItem.price}
-                  onChange={event => handleNewItemManualChange('price', event.target.value)}
-                />
-              </FormRow>
-              <div className="flex h-full items-end">
-                <button
-                  type="button"
-                  onClick={handleAddCustomItem}
-                  className="inline-flex h-12 w-12 items-center justify-center rounded-xl border border-indigo-400/60 bg-indigo-500/80 text-white shadow-[0_14px_30px_-18px_rgba(99,102,241,0.75)] transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10"
-                  disabled={!canAddCustomItem}
-                  aria-label="Add custom item"
-                >
-                  <Check size={18} />
-                </button>
+          {selectedProduct && isCustomSelected && (
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <div className="flex flex-wrap items-end gap-4">
+                <FormRow className="flex-1 min-w-[160px]">
+                  <Label htmlFor="custom-quantity">Quantity</Label>
+                  <Input
+                    id="custom-quantity"
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={newItem.quantity}
+                    onChange={event => handleNewItemManualChange('quantity', event.target.value)}
+                  />
+                </FormRow>
+                <FormRow className="flex-1 min-w-[160px]">
+                  <Label htmlFor="custom-price">Price</Label>
+                  <Input
+                    id="custom-price"
+                    type="number"
+                    step="any"
+                    min="0"
+                    startAdornment="$"
+                    value={newItem.price}
+                    onChange={event => handleNewItemManualChange('price', event.target.value)}
+                  />
+                </FormRow>
+                <div className="flex h-full items-end">
+                  <button
+                    type="button"
+                    onClick={handleAddCustomItem}
+                    className="inline-flex h-12 w-12 items-center justify-center rounded-xl border border-indigo-400/60 bg-indigo-500/80 text-white shadow-[0_14px_30px_-18px_rgba(99,102,241,0.75)] transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10"
+                    disabled={!canAddCustomItem}
+                    aria-label="Add custom item"
+                  >
+                    <Check size={18} />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
-
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-6 space-y-4">
-          {!isCreateForm && (
-            <h4 className="text-lg font-semibold text-primary">Payment & Notes</h4>
           )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormRow>
-              <Label htmlFor="cash">Cash</Label>
-              <Input
-                id="cash"
-                type="text"
-                inputMode="decimal"
-                startAdornment="$"
-                value={paymentInputs.cash}
-                onChange={event => handlePaymentAmountChange('cash', event.target.value)}
-              />
-            </FormRow>
-            <FormRow>
-              <Label htmlFor="etransfer">E-Transfer</Label>
-              <Input
-                id="etransfer"
-                type="text"
-                inputMode="decimal"
-                startAdornment="$"
-                value={paymentInputs.etransfer}
-                onChange={event => handlePaymentAmountChange('etransfer', event.target.value)}
-              />
-            </FormRow>
-          </div>
 
-          {!isCreateForm && (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-3">
+            {groupedItems.length > 0 ? (
+              <>
+                <span className="text-xs uppercase tracking-wide text-muted">{value.items.length} {value.items.length === 1 ? 'item' : 'items'}</span>
+                <div className="space-y-3">
+                  {groupedItems.map(group => {
+                    const product = products.find(p => p.id === group.productId);
+                    const itemLabel = product?.name || 'Unknown product';
+                    const quantityLabel = group.displayQty || '—';
+                    const countLabel = `${group.count}`;
+                    return (
+                      <div
+                        key={`${group.productId}|${group.sizeKey}`}
+                        className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-sm text-primary"
+                      >
+                        <span className="truncate font-semibold" title={itemLabel}>
+                          {itemLabel}
+                        </span>
+                        <span className="text-xs font-medium text-muted text-center" aria-label={`Quantity ${quantityLabel}`}>
+                          {quantityLabel}
+                        </span>
+                        <span className="text-xs font-medium text-muted text-center" aria-label={`${countLabel} ${countLabel === '1' ? 'product' : 'products'}`}>
+                          {countLabel}
+                        </span>
+                        <span className="font-semibold text-right">
+                          {formatMoney(group.totalPrice)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFromGroup(group.productId, group.sizeKey)}
+                          className="ml-auto rounded-full border border-transparent p-2 text-muted transition hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200"
+                          aria-label="Remove item"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted">No items added yet.</p>
+            )}
+          </div>
+        </div>
+
+        {!isCreateForm && (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-6 space-y-4">
             <FormRow>
               <Label htmlFor="notes">Notes</Label>
               <Textarea
                 id="notes"
-                rows={3}
+                rows={4}
                 value={value.notes}
                 onChange={handleNotesChange}
                 placeholder="Special instructions, delivery notes, etc."
               />
             </FormRow>
-          )}
-        </div>
+          </div>
+        )}
       </section>
 
       <aside className="space-y-6 rounded-2xl border border-white/10 bg-white/[0.04] p-6 self-start lg:sticky lg:top-0">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h4 className="text-base font-semibold text-primary">Order Summary</h4>
-            <span className="text-xs text-muted">{value.items.length} {value.items.length === 1 ? 'item' : 'items'}</span>
-          </div>
-
-          {groupedItems.length > 0 && (
-            <div className="space-y-3">
-              {groupedItems.map(group => {
-                const product = products.find(p => p.id === group.productId);
-                return (
-                  <div
-                    key={`${group.productId}|${group.sizeKey}`}
-                    className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-primary"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-semibold truncate">{product?.name || 'Unknown product'}</p>
-                      <p className="text-xs text-muted">{group.count}× · {group.displayQty}</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-semibold">{formatMoney(group.totalPrice)}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveFromGroup(group.productId, group.sizeKey)}
-                        className="rounded-full border border-transparent p-2 text-muted transition hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200"
-                        aria-label="Remove item"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input
+            id="cash"
+            type="text"
+            inputMode="decimal"
+            startAdornment="$"
+            placeholder="Cash"
+            aria-label="Cash"
+            value={paymentInputs.cash}
+            onChange={event => handlePaymentAmountChange('cash', event.target.value)}
+          />
+          <Input
+            id="etransfer"
+            type="text"
+            inputMode="decimal"
+            startAdornment="$"
+            placeholder="E-Transfer"
+            aria-label="E-Transfer"
+            value={paymentInputs.etransfer}
+            onChange={event => handlePaymentAmountChange('etransfer', event.target.value)}
+          />
         </div>
-
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 text-primary">
-          <p className="text-xs uppercase tracking-wide text-muted">Order Total</p>
-          <p className="mt-1 text-lg font-semibold">{formatMoney(finalTotal)}</p>
-          {amountPaid > 0 ? (
-            <p className="mt-2 text-xs text-muted">Collected {formatMoney(amountPaid)}</p>
-          ) : null}
-        </div>
-
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 text-primary">
-          {amountDue > 0 ? (
-            <div className="flex items-center justify-between text-sm font-semibold">
-              <span>Amount Due</span>
-              <span>{formatMoney(amountDue)}</span>
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between font-semibold">
+              <span>Order</span>
+              <span>{formatMoney(finalTotal)}</span>
             </div>
-          ) : (
-            <div className="flex items-center justify-between text-sm font-semibold">
+            {amountPaid > 0 ? (
+              <div className="flex items-center justify-between text-muted">
+                <span>Payment</span>
+                <span>{formatMoney(amountPaid)}</span>
+              </div>
+            ) : null}
+            <div className="flex items-center justify-between font-semibold">
               <span>Balance</span>
-              <span>{formatMoney(changeDue)}</span>
+              <span className={balanceColorClass}>
+                {formatMoney(displayedBalance)}
+              </span>
             </div>
-          )}
+          </div>
         </div>
+        {isBalanceDue && (
+          <div className="space-y-3 rounded-2xl border border-amber-400/40 bg-amber-500/10 p-5 text-sm">
+            <div className="flex items-center gap-2 font-semibold text-amber-100">
+              <AlertTriangle size={16} />
+              <span>Payment due</span>
+            </div>
+            <FormRow>
+              <Label htmlFor="payment-due-date">Due date</Label>
+              <Input
+                id="payment-due-date"
+                type="date"
+                value={value.paymentDueDate}
+                onChange={handlePaymentDueDateChange}
+                min={value.date || undefined}
+              />
+            </FormRow>
+            {!value.paymentDueDate && (
+              <p className="text-xs text-amber-100/80">
+                Set a due date to get reminders until this balance is cleared.
+              </p>
+            )}
+          </div>
+        )}
       </aside>
     </div>
   );
@@ -1047,6 +1080,7 @@ export const CreateOrderModal: React.FC<{
     items: [],
     notes: '',
     date: new Date().toISOString().split('T')[0],
+    paymentDueDate: '',
     amountPaid: '',
     paymentMethods: { cash: 0, etransfer: 0 },
     fees: { amount: '', description: ''},
@@ -1054,15 +1088,12 @@ export const CreateOrderModal: React.FC<{
   });
 
   const [savedDraft, setSavedDraft] = useLocalStorage<OrderFormState | null>('createOrderDraft', null);
-  const [orderState, setOrderState] = useState<OrderFormState>(() => savedDraft ?? getInitialState());
+  const [orderState, setOrderState] = useState<OrderFormState>(() => savedDraft ? { ...getInitialState(), ...savedDraft } : getInitialState());
 
   useEffect(() => {
     if (isOpen) {
-      if (savedDraft) {
-        setOrderState(savedDraft);
-      } else {
-        setOrderState(getInitialState());
-      }
+      const nextState = savedDraft ? { ...getInitialState(), ...savedDraft } : getInitialState();
+      setOrderState(nextState);
     }
   }, [isOpen, savedDraft]);
 
@@ -1084,9 +1115,23 @@ export const CreateOrderModal: React.FC<{
       onAlert("Invalid Order", "Please select a client and add at least one item.");
       return;
     }
+    const trimmedDueDate = orderState.paymentDueDate?.trim();
+    const paymentDueDate = trimmedDueDate ? trimmedDueDate : undefined;
+    const paymentMethods: PaymentMethods = {
+      cash: Number(orderState.paymentMethods.cash) || 0,
+      etransfer: Number(orderState.paymentMethods.etransfer) || 0,
+    };
+    if (paymentDueDate) {
+      paymentMethods.dueDate = paymentDueDate;
+    }
     onCreate({
-        ...orderState,
+        clientId: orderState.clientId,
+        items: orderState.items,
+        notes: orderState.notes,
+        date: orderState.date,
+        paymentDueDate,
         amountPaid: Number(orderState.amountPaid) || 0,
+        paymentMethods,
         fees: { amount: Number(orderState.fees.amount) || 0, description: orderState.fees.description },
         discount: { amount: Number(orderState.discount.amount) || 0, description: orderState.discount.description },
     });
@@ -1102,8 +1147,13 @@ export const CreateOrderModal: React.FC<{
       size="lg"
       hideTitle
       actions={
-        <button type="submit" form="create-order-form" className="gloss-btn">
-          New Order
+        <button
+          type="submit"
+          form="create-order-form"
+          className={modalConfirmButtonClass}
+          aria-label="Create order"
+        >
+          <Check size={18} className={modalConfirmIconClass} />
         </button>
       }
     >
@@ -1114,7 +1164,6 @@ export const CreateOrderModal: React.FC<{
           products={products}
           onChange={handleFormChange}
           onAlert={onAlert}
-          showDateField={false}
           isCreateForm
         />
       </form>
@@ -1133,13 +1182,22 @@ export const EditOrderModal: React.FC<{
   onAlert: (title: string, message: string) => void;
 }> = ({ isOpen, onClose, order, clients, products, onSave, onDelete, onAlert }) => {
   const getInitialState = (initialOrder: Order | null): OrderFormState => {
+    const emptyState: OrderFormState = {
+      clientId: '',
+      items: [],
+      notes: '',
+      date: new Date().toISOString().split('T')[0],
+      paymentDueDate: '',
+      amountPaid: '',
+      paymentMethods: { cash: 0, etransfer: 0 },
+      fees: { amount: '', description: ''},
+      discount: { amount: '', description: ''},
+    };
+
     if (!initialOrder) {
-      return {
-        clientId: '', items: [], notes: '', date: new Date().toISOString().split('T')[0],
-        amountPaid: '', paymentMethods: { cash: 0, etransfer: 0 },
-        fees: { amount: '', description: ''}, discount: { amount: '', description: ''},
-      };
+      return emptyState;
     }
+
     const paid = Number(initialOrder.amountPaid) || 0;
     const src: any = initialOrder.paymentMethods || {};
     let pm: PaymentMethods = {
@@ -1150,12 +1208,17 @@ export const EditOrderModal: React.FC<{
       if (src.cash === true) pm.cash = paid;
       else if (src.etransfer === true) pm.etransfer = paid;
     }
+    const dueDateFromMethods = typeof src.dueDate === 'string' ? src.dueDate : undefined;
+    if (dueDateFromMethods) {
+      pm = { ...pm, dueDate: dueDateFromMethods };
+    }
     const sum = (pm.cash || 0) + (pm.etransfer || 0);
     return {
       clientId: initialOrder.clientId,
       items: initialOrder.items,
       notes: initialOrder.notes || '',
       date: initialOrder.date,
+      paymentDueDate: initialOrder.paymentDueDate || dueDateFromMethods || '',
       amountPaid: sum ? String(sum) : String(initialOrder.amountPaid || ''),
       paymentMethods: pm,
       fees: { amount: String(initialOrder.fees?.amount || ''), description: initialOrder.fees?.description || '' },
@@ -1188,13 +1251,25 @@ export const EditOrderModal: React.FC<{
   const buildStagedOrder = useCallback(() => {
     if (!order) return null;
 
+    const trimmedDue = orderState.paymentDueDate?.trim() || '';
+    const fallbackDue = typeof orderState.paymentMethods?.dueDate === 'string' ? orderState.paymentMethods.dueDate.trim() : '';
+    const resolvedDue = computedStatus === 'Completed' ? '' : (trimmedDue || fallbackDue);
+    const paymentMethods: PaymentMethods = {
+      cash: Number(orderState.paymentMethods.cash) || 0,
+      etransfer: Number(orderState.paymentMethods.etransfer) || 0,
+    };
+    if (resolvedDue) {
+      paymentMethods.dueDate = resolvedDue;
+    }
+
     return {
       ...order,
       clientId: orderState.clientId,
       items: orderState.items,
       notes: orderState.notes,
       date: orderState.date,
-      paymentMethods: orderState.paymentMethods,
+      paymentMethods,
+      paymentDueDate: resolvedDue || undefined,
       total,
       status: computedStatus,
       amountPaid: parsedAmountPaid,
@@ -1240,13 +1315,23 @@ export const EditOrderModal: React.FC<{
     if (!order) return;
 
     const status: 'Draft' | 'Unpaid' | 'Completed' = computedStatus;
-
+    const trimmedDue = orderState.paymentDueDate?.trim() || '';
+    const fallbackDue = typeof orderState.paymentMethods?.dueDate === 'string' ? orderState.paymentMethods.dueDate.trim() : '';
+    const resolvedDue = status === 'Completed' ? '' : (trimmedDue || fallbackDue);
+    const paymentMethods: PaymentMethods = {
+      cash: Number(orderState.paymentMethods.cash) || 0,
+      etransfer: Number(orderState.paymentMethods.etransfer) || 0,
+    };
+    if (resolvedDue) {
+      paymentMethods.dueDate = resolvedDue;
+    }
     const updatedOrder = {
       clientId: orderState.clientId,
       items: orderState.items,
       notes: orderState.notes,
       date: orderState.date,
-      paymentMethods: orderState.paymentMethods,
+      paymentMethods,
+      paymentDueDate: resolvedDue || undefined,
       total,
       status,
       amountPaid: parsedAmountPaid,
@@ -1427,8 +1512,13 @@ export const CreateClientModal: React.FC<{
       size="lg"
       hideTitle
       actions={
-        <button type="submit" form="create-client-form" className="gloss-btn">
-          Add Client
+        <button
+          type="submit"
+          form="create-client-form"
+          className={modalConfirmButtonClass}
+          aria-label="Add client"
+        >
+          <Check size={18} className={modalConfirmIconClass} />
         </button>
       }
     >
@@ -1677,6 +1767,53 @@ export const OrderDetailsModal: React.FC<{
   const discountAmount = order.discount?.amount || 0;
   const feesAmount = order.fees?.amount || 0;
   const notes = order.notes?.trim();
+  const dueDateStr = order.paymentDueDate || (typeof paymentMethods.dueDate === 'string' ? paymentMethods.dueDate : '');
+  const outstandingAmount = Math.max(0, Math.round(balance));
+  const dueDetails = (() => {
+    if (outstandingAmount <= 0) return null;
+    if (!dueDateStr) {
+      return {
+        label: 'Due date not set',
+        description: `${outstandingAmount ? `$${outstandingAmount.toLocaleString()} outstanding • ` : ''}Add a due date to track this balance.`
+          .trim(),
+        className: 'text-amber-300',
+      } as const;
+    }
+    const dueDate = new Date(`${dueDateStr}T00:00:00`);
+    if (Number.isNaN(dueDate.getTime())) {
+      return {
+        label: 'Due date unavailable',
+        description: `${outstandingAmount ? `$${outstandingAmount.toLocaleString()} outstanding` : ''}`.trim(),
+        className: 'text-muted',
+      } as const;
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diff = Math.floor((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const formattedDate = dueDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    if (diff < 0) {
+      const daysLate = Math.abs(diff);
+      return {
+        label: 'Overdue',
+        description: `$${outstandingAmount.toLocaleString()} outstanding • ${daysLate} day${daysLate === 1 ? '' : 's'} late (was due ${formattedDate})`,
+        className: 'text-red-300',
+      } as const;
+    }
+    if (diff === 0) {
+      return {
+        label: 'Due today',
+        description: `$${outstandingAmount.toLocaleString()} outstanding • Due ${formattedDate}`,
+        className: 'text-amber-300',
+      } as const;
+    }
+    const label = diff === 1 ? 'Due in 1 day' : `Due in ${diff} days`;
+    const className = diff <= 3 ? 'text-amber-300' : 'text-emerald-300';
+    return {
+      label,
+      description: `$${outstandingAmount.toLocaleString()} outstanding • Due ${formattedDate}`,
+      className,
+    } as const;
+  })();
 
   const statusPresentation = (() => {
     const outstanding = Math.max(0, Math.round(balance));
@@ -1760,7 +1897,7 @@ export const OrderDetailsModal: React.FC<{
       }
     >
       <div className="space-y-4 text-sm">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="rounded-lg border border-white/10 bg-white/5 p-4">
             <p className="text-xs uppercase tracking-wide text-muted">Date</p>
             <p className="mt-1 text-lg font-semibold text-primary">{order.date}</p>
@@ -1772,6 +1909,17 @@ export const OrderDetailsModal: React.FC<{
           <div className="rounded-lg border border-white/10 bg-white/5 p-4">
             <p className="text-xs uppercase tracking-wide text-muted">Status</p>
             <span className={`status-badge mt-2 inline-flex ${statusPresentation.className}`} title={statusPresentation.tooltip}>{statusPresentation.label}</span>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+            <p className="text-xs uppercase tracking-wide text-muted">Payment Due</p>
+            {dueDetails ? (
+              <>
+                <p className={`mt-1 text-lg font-semibold ${dueDetails.className}`}>{dueDetails.label}</p>
+                <p className="mt-1 text-xs text-muted">{dueDetails.description}</p>
+              </>
+            ) : (
+              <p className="mt-1 text-lg font-semibold text-emerald-300">Paid in full</p>
+            )}
           </div>
         </div>
 
@@ -1841,7 +1989,19 @@ export const OrderDetailsModal: React.FC<{
   );
 };
 
-type TierFormState = { sizeLabel: string; quantity: string; price: string; };
+type TierFormState = { quantity: string; price: string; };
+
+const formatTierLabel = (quantity: number, type: Product['type']) => {
+  if (!Number.isFinite(quantity) || quantity <= 0) return '';
+  const rounded = Number.isInteger(quantity) ? quantity : Number.parseFloat(quantity.toFixed(2));
+  if (!Number.isFinite(rounded)) return '';
+  const normalized = rounded.toString();
+  if (type === 'unit') {
+    return normalized;
+  }
+  const suffix = type === 'g' ? 'g' : 'ml';
+  return `${normalized}${suffix}`;
+};
 
 export const CreateProductModal: React.FC<{
   isOpen: boolean;
@@ -1853,7 +2013,6 @@ export const CreateProductModal: React.FC<{
         type: 'g' as 'g' | 'ml' | 'unit', 
         stock: '', 
         costPerUnit: '', 
-        increment: '1', 
         tiers: [] as TierFormState[]
     });
 
@@ -1877,7 +2036,7 @@ export const CreateProductModal: React.FC<{
   };
 
   const addTier = () => {
-    setProductData(prev => ({ ...prev, tiers: [...prev.tiers, { sizeLabel: '', quantity: '', price: '' }] }));
+    setProductData(prev => ({ ...prev, tiers: [...prev.tiers, { quantity: '', price: '' }] }));
   };
   
   const removeTier = (index: number) => {
@@ -1886,17 +2045,27 @@ export const CreateProductModal: React.FC<{
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const mappedTiers = productData.tiers
+      .map(tier => {
+        const quantityValue = Number.parseFloat(tier.quantity);
+        const priceValue = Number.parseFloat(tier.price);
+        const normalizedQuantity = Number.isFinite(quantityValue) && quantityValue > 0 ? quantityValue : 0;
+        const normalizedPrice = Number.isFinite(priceValue) ? priceValue : 0;
+        const sizeLabel = formatTierLabel(normalizedQuantity, productData.type);
+        return {
+          sizeLabel,
+          quantity: normalizedQuantity,
+          price: normalizedPrice,
+        };
+      })
+      .filter(tier => tier.quantity > 0);
     onAdd({
       name: productData.name,
       type: productData.type,
-      stock: parseFloat(productData.stock) || 0,
-      increment: parseFloat(productData.increment) || 1,
-      costPerUnit: Math.round((parseFloat(productData.costPerUnit) || 0) * 100) / 100,
-      tiers: productData.tiers.map(tier => ({
-        sizeLabel: tier.sizeLabel,
-        quantity: parseFloat(tier.quantity) || 0,
-        price: parseFloat(tier.price) || 0
-      }))
+      stock: Number.parseFloat(productData.stock) || 0,
+      increment: 1,
+      costPerUnit: Math.round((Number.parseFloat(productData.costPerUnit) || 0) * 100) / 100,
+      tiers: mappedTiers,
     });
   };
 
@@ -1908,8 +2077,13 @@ export const CreateProductModal: React.FC<{
       size="lg"
       hideTitle
       actions={
-        <button type="submit" form="create-product-form" className="gloss-btn">
-          Add Product
+        <button
+          type="submit"
+          form="create-product-form"
+          className={modalConfirmButtonClass}
+          aria-label="Add product"
+        >
+          <Check size={18} className={modalConfirmIconClass} />
         </button>
       }
     >
@@ -1928,7 +2102,7 @@ export const CreateProductModal: React.FC<{
                 </Select>
             </FormRow>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <FormRow>
                 <Label htmlFor="product-stock">Initial Stock</Label>
                 <Input id="product-stock" name="stock" type="text" inputMode="decimal" value={productData.stock} onChange={handleChange} />
@@ -1937,19 +2111,14 @@ export const CreateProductModal: React.FC<{
                 <Label htmlFor="product-costPerUnit">Cost Per Unit</Label>
                 <Input id="product-costPerUnit" name="costPerUnit" type="text" inputMode="decimal" value={productData.costPerUnit} onChange={handleChange} startAdornment="$" />
             </FormRow>
-            <FormRow>
-                <Label htmlFor="product-increment">Order Increment</Label>
-                <Input id="product-increment" name="increment" type="text" inputMode="decimal" value={productData.increment} onChange={handleChange} />
-            </FormRow>
         </div>
         <div>
             <h3 className="text-primary font-semibold mb-2">Pricing Tiers</h3>
             <div className="space-y-2">
                 {productData.tiers.map((tier, index) => (
                     <div key={index} className="grid grid-cols-12 gap-2 items-center">
-                        <Input placeholder="Label (e.g., 1g)" value={tier.sizeLabel} onChange={e => handleTierChange(index, 'sizeLabel', e.target.value)} className="col-span-5" />
-                        <Input type="text" inputMode="decimal" placeholder="Qty" value={tier.quantity} onChange={e => handleTierChange(index, 'quantity', e.target.value)} className="col-span-3" />
-                        <Input type="text" inputMode="decimal" placeholder="Price" value={tier.price} onChange={e => handleTierChange(index, 'price', e.target.value)} className="col-span-3" startAdornment="$" />
+                        <Input type="text" inputMode="decimal" placeholder="Qty" value={tier.quantity} onChange={e => handleTierChange(index, 'quantity', e.target.value)} className="col-span-5" />
+                        <Input type="text" inputMode="decimal" placeholder="Price" value={tier.price} onChange={e => handleTierChange(index, 'price', e.target.value)} className="col-span-6" startAdornment="$" />
                         <button type="button" onClick={() => removeTier(index)} className="col-span-1 text-muted hover:text-purple-400 p-2"><Trash2 size={16} /></button>
                     </div>
                 ))}
@@ -1967,8 +2136,7 @@ interface ProductFormState {
     type: 'g' | 'ml' | 'unit';
     stock: string;
     costPerUnit: string;
-    increment: string;
-    tiers: { sizeLabel: string; quantity: string; price: string; }[];
+    tiers: { quantity: string; price: string; }[];
     inactive?: boolean;
     lastOrdered?: string;
 }
@@ -1987,15 +2155,17 @@ export const EditProductModal: React.FC<{
   useEffect(() => {
     if (product) {
         setProductData({
-            ...product,
+            id: product.id,
+            name: product.name,
+            type: product.type,
             stock: String(product.stock),
             costPerUnit: String(product.costPerUnit),
-            increment: String(product.increment),
             tiers: product.tiers.map(t => ({
-                sizeLabel: t.sizeLabel,
                 quantity: String(t.quantity),
                 price: String(t.price)
-            }))
+            })),
+            inactive: product.inactive,
+            lastOrdered: product.lastOrdered
         });
     }
   }, [product]);
@@ -2016,7 +2186,7 @@ export const EditProductModal: React.FC<{
 
   const addTier = () => {
     if (!productData) return;
-    setProductData({ ...productData, tiers: [...productData.tiers, { sizeLabel: '', quantity: '', price: '' }] });
+    setProductData({ ...productData, tiers: [...productData.tiers, { quantity: '', price: '' }] });
   };
   
   const removeTier = (index: number) => {
@@ -2027,19 +2197,29 @@ export const EditProductModal: React.FC<{
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (productData && product) {
-      const numericStock = parseFloat(productData.stock) || 0;
+      const numericStock = Number.parseFloat(productData.stock) || 0;
+      const computedTiers = productData.tiers
+        .map(t => {
+          const quantityValue = Number.parseFloat(t.quantity);
+          const priceValue = Number.parseFloat(t.price);
+          const normalizedQuantity = Number.isFinite(quantityValue) && quantityValue > 0 ? quantityValue : 0;
+          const normalizedPrice = Number.isFinite(priceValue) ? priceValue : 0;
+          const sizeLabel = formatTierLabel(normalizedQuantity, productData.type);
+          return {
+            sizeLabel,
+            quantity: normalizedQuantity,
+            price: normalizedPrice,
+          };
+        })
+        .filter(tier => tier.quantity > 0);
       onSave({
         ...product,
         name: productData.name,
         type: productData.type,
         stock: numericStock,
-        increment: parseFloat(productData.increment) || 1,
-        costPerUnit: Math.round((parseFloat(productData.costPerUnit) || 0) * 100) / 100,
-        tiers: productData.tiers.map(t => ({
-            sizeLabel: t.sizeLabel,
-            quantity: parseFloat(t.quantity) || 0,
-            price: parseFloat(t.price) || 0
-        })),
+        increment: product.increment ?? 1,
+        costPerUnit: Math.round((Number.parseFloat(productData.costPerUnit) || 0) * 100) / 100,
+        tiers: computedTiers,
         inactive: numericStock <= 0,
       });
     }
@@ -2062,7 +2242,7 @@ export const EditProductModal: React.FC<{
                 </Select>
             </FormRow>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <FormRow>
                 <Label htmlFor="edit-product-stock">Current Stock</Label>
                 <Input id="edit-product-stock" name="stock" type="text" inputMode="decimal" value={productData.stock} onChange={handleChange} />
@@ -2071,19 +2251,14 @@ export const EditProductModal: React.FC<{
                 <Label htmlFor="edit-product-costPerUnit">Cost Per Unit</Label>
                 <Input id="edit-product-costPerUnit" name="costPerUnit" type="text" inputMode="decimal" value={productData.costPerUnit} onChange={handleChange} startAdornment="$" />
             </FormRow>
-            <FormRow>
-                <Label htmlFor="edit-product-increment">Order Increment</Label>
-                <Input id="edit-product-increment" name="increment" type="text" inputMode="decimal" value={productData.increment} onChange={handleChange} />
-            </FormRow>
         </div>
         <div>
             <h3 className="text-primary font-semibold mb-2">Pricing Tiers</h3>
             <div className="space-y-2">
                 {productData.tiers.map((tier, index) => (
                     <div key={index} className="grid grid-cols-12 gap-2 items-center">
-                        <Input placeholder="Label (e.g., 1g)" value={tier.sizeLabel} onChange={e => handleTierChange(index, 'sizeLabel', e.target.value)} className="col-span-5" />
-                        <Input type="text" inputMode="decimal" placeholder="Qty" value={tier.quantity} onChange={e => handleTierChange(index, 'quantity', e.target.value)} className="col-span-3" />
-                        <Input type="text" inputMode="decimal" placeholder="Price" value={tier.price} onChange={e => handleTierChange(index, 'price', e.target.value)} className="col-span-3" startAdornment="$" />
+                        <Input type="text" inputMode="decimal" placeholder="Qty" value={tier.quantity} onChange={e => handleTierChange(index, 'quantity', e.target.value)} className="col-span-5" />
+                        <Input type="text" inputMode="decimal" placeholder="Price" value={tier.price} onChange={e => handleTierChange(index, 'price', e.target.value)} className="col-span-6" startAdornment="$" />
                         <button type="button" onClick={() => removeTier(index)} className="col-span-1 text-muted hover:text-purple-400 p-2"><Trash2 size={16} /></button>
                     </div>
                 ))}
@@ -2177,9 +2352,14 @@ export const CreateExpenseModal: React.FC<{
             size="md"
             hideTitle
             actions={
-                <button type="submit" form="create-expense-form" className="gloss-btn">
-                    Add Expense
-                </button>
+              <button
+                type="submit"
+                form="create-expense-form"
+                className={modalConfirmButtonClass}
+                aria-label="Add expense"
+              >
+                <Check size={18} className={modalConfirmIconClass} />
+              </button>
             }
         >
             <form id="create-expense-form" onSubmit={handleSubmit} className="space-y-6">
@@ -2422,15 +2602,12 @@ export const CalculatorModal: React.FC<{
     if (btn === 'C' || btn === '←' || btn === '%') {
       return `${baseClass} bg-white/10 text-muted hover:bg-white/20`;
     }
-    if (['/', '*', '-', '+', '='].includes(btn)) {
-      return `${baseClass} bg-indigo-500/80 text-white hover:bg-indigo-500`;
-    }
     return `${baseClass} bg-white/5 text-primary hover:bg-white/10`;
   };
   
-  const Button = ({ value, className = '' }: { value: string, className?: string }) => (
+  const Button = ({ value, label = value, className = '' }: { value: string; label?: string; className?: string }) => (
     <button onClick={() => handleButtonClick(value)} className={`${getButtonClass(value)} ${className}`}>
-        {value}
+        {label}
     </button>
   );
 
@@ -2447,7 +2624,7 @@ export const CalculatorModal: React.FC<{
             <Button value="7" />
             <Button value="8" />
             <Button value="9" />
-            <Button value="*" />
+            <Button value="*" label="X" />
 
             <Button value="4" />
             <Button value="5" />
@@ -2560,6 +2737,319 @@ export const MarkPaidModal: React.FC<{
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-muted hover:text-primary">Cancel</button>
           <button type="button" onClick={handleConfirm} disabled={!isAmountValid} className={`gloss-btn ${!isAmountValid ? 'opacity-50 cursor-not-allowed' : ''}`}>Confirm</button>
+        </div>
+      </div>
+    </ModalWrapper>
+  );
+};
+
+type AssistantPreview = {
+  clientName: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+  shipping: number;
+  discount: number;
+  total: number;
+  amountPaid: number;
+  notes?: string;
+  paymentDueDate?: string;
+};
+
+export const AssistantModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  prompt: string;
+  onPromptChange: React.Dispatch<React.SetStateAction<string>>;
+  isProcessing: boolean;
+  errorMessage: string | null;
+  preview: AssistantPreview | null;
+  onGenerate: () => void;
+  onCreate: () => void;
+  onReset: () => void;
+}> = ({
+  isOpen,
+  onClose,
+  prompt,
+  onPromptChange,
+  isProcessing,
+  errorMessage,
+  preview,
+  onGenerate,
+  onCreate,
+  onReset,
+}) => {
+  const [isListening, setIsListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  const speechCtor = typeof window !== 'undefined'
+    ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
+    : null;
+  const supportsSpeech = Boolean(speechCtor);
+
+  const stopListening = useCallback((silent = false) => {
+    const recognition = recognitionRef.current;
+    if (recognition) {
+      try {
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        recognition.stop();
+      } catch {
+        // ignore termination errors
+      }
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+    if (!silent) {
+      setInterimTranscript('');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      stopListening(true);
+      setSpeechError(null);
+      setInterimTranscript('');
+    }
+    return () => {
+      stopListening(true);
+    };
+  }, [isOpen, stopListening]);
+
+  const startListening = () => {
+    if (!speechCtor) {
+      setSpeechError('Voice capture is not supported in this browser.');
+      return;
+    }
+    try {
+      const recognition = new speechCtor();
+      recognition.lang = 'en-US';
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event: any) => {
+        let interim = '';
+        let finalText = '';
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const result = event.results[i];
+          const transcript = result[0].transcript;
+          if (result.isFinal) {
+            finalText += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+        if (interim) {
+          setInterimTranscript(interim.trim());
+        }
+        if (finalText) {
+          const cleaned = finalText.trim();
+          if (cleaned) {
+            onPromptChange(prev => (prev ? `${prev.trim()} ${cleaned}`.trim() : cleaned));
+          }
+          setInterimTranscript('');
+        }
+      };
+      recognition.onerror = (event: any) => {
+        if (event?.error !== 'no-speech') {
+          setSpeechError('The microphone stopped unexpectedly. You can try again or type your request.');
+        }
+        stopListening();
+      };
+      recognition.onend = () => {
+        stopListening(true);
+      };
+      recognition.start();
+      recognitionRef.current = recognition;
+      setSpeechError(null);
+      setInterimTranscript('');
+      setIsListening(true);
+    } catch (error) {
+      console.error('Speech recognition error', error);
+      setSpeechError('Unable to access the microphone. Check browser permissions or type your request instead.');
+      stopListening();
+    }
+  };
+
+  const tipExamples = [
+    'client: Glass Co, product: Frosted Panel, quantity 12, price $120 each, shipping $45',
+    'client: Taylor Smith, product: Blue vase, qty 3, price $85 total, shipping 0, notes rush order',
+  ];
+
+  const disableGenerate = isProcessing || !prompt.trim();
+  const disableCreate = isProcessing || !preview;
+
+  return (
+    <ModalWrapper isOpen={isOpen} onClose={onClose} title="Order Assistant" size="lg">
+      <div className="flex flex-col gap-6">
+        <div className="space-y-3">
+          <Label htmlFor="assistant-prompt">Describe the order</Label>
+          <Textarea
+            id="assistant-prompt"
+            rows={4}
+            value={prompt}
+            onChange={e => onPromptChange(e.target.value)}
+            placeholder="Example: client: Glass Co, product: Frosted Panel, quantity 12, price $120 each, shipping $45"
+          />
+          {supportsSpeech && (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={isListening ? () => stopListening() : startListening}
+                className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors ${
+                  isListening
+                    ? 'bg-rose-500/80 text-white hover:bg-rose-500'
+                    : 'bg-white/10 text-muted hover:bg-white/15 hover:text-primary'
+                }`}
+              >
+                {isListening ? <Square size={16} /> : <Mic size={16} />}
+                <span>{isListening ? 'Stop listening' : 'Speak order'}</span>
+              </button>
+              {interimTranscript && (
+                <span className="text-sm text-primary/80">“{interimTranscript}”</span>
+              )}
+              {speechError && (
+                <span className="text-xs text-rose-200/80">{speechError}</span>
+              )}
+            </div>
+          )}
+          {!supportsSpeech && (
+            <div className="text-xs text-muted">
+              Voice capture is not available in this browser. Type your request instead.
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-muted">
+          <p className="font-medium text-primary">Tip:</p>
+          <ul className="list-disc space-y-1 pl-5">
+            {tipExamples.map(example => (
+              <li key={example} className="text-muted">{example}</li>
+            ))}
+          </ul>
+        </div>
+
+        {errorMessage && (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+            {errorMessage}
+          </div>
+        )}
+
+        {preview && (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="flex items-center gap-3 pb-4 border-b border-white/10 mb-4">
+              <div className="glass-icon h-12 w-12 flex items-center justify-center rounded-2xl bg-indigo-500/20 text-indigo-200">
+                <Bot size={24} />
+              </div>
+              <div>
+                <p className="text-sm text-muted">Preview</p>
+                <p className="text-lg font-semibold text-primary">Assistant summary</p>
+              </div>
+            </div>
+            <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Client</dt>
+                <dd className="text-sm text-primary">{preview.clientName}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Product</dt>
+                <dd className="text-sm text-primary">{preview.productName}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Quantity</dt>
+                <dd className="text-sm text-primary">{preview.quantity}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Unit price</dt>
+                <dd className="text-sm text-primary">${preview.unitPrice.toFixed(2)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Subtotal</dt>
+                <dd className="text-sm text-primary">${preview.subtotal.toFixed(2)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Shipping</dt>
+                <dd className="text-sm text-primary">${preview.shipping.toFixed(2)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Discount</dt>
+                <dd className="text-sm text-primary">${preview.discount.toFixed(2)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-wide text-muted">Amount paid</dt>
+                <dd className="text-sm text-primary">${preview.amountPaid.toFixed(2)}</dd>
+              </div>
+              {preview.paymentDueDate && (
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted">Payment due</dt>
+                  <dd className="text-sm text-primary">{preview.paymentDueDate}</dd>
+                </div>
+              )}
+              {preview.notes && (
+                <div className="sm:col-span-2">
+                  <dt className="text-xs uppercase tracking-wide text-muted">Notes</dt>
+                  <dd className="text-sm text-primary">{preview.notes}</dd>
+                </div>
+              )}
+            </dl>
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <div className="text-lg font-semibold text-primary">
+                Total: ${preview.total.toFixed(2)}
+              </div>
+              <button
+                type="button"
+                onClick={onCreate}
+                disabled={disableCreate}
+                className={`gloss-btn ${disableCreate ? 'cursor-not-allowed opacity-60' : ''}`}
+              >
+                Create order
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isProcessing && (
+          <div className="flex items-center gap-2 text-sm text-muted">
+            <Loader2 size={16} className="animate-spin" />
+            <span>Working on it…</span>
+          </div>
+        )}
+
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                onReset();
+                setSpeechError(null);
+                setInterimTranscript('');
+                stopListening(true);
+              }}
+              className="rounded-full px-4 py-2 text-sm text-muted hover:text-primary hover:bg-white/10 transition-colors"
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full px-4 py-2 text-sm text-muted hover:text-primary hover:bg-white/10 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={onGenerate}
+              disabled={disableGenerate}
+              className={`gloss-btn ${disableGenerate ? 'cursor-not-allowed opacity-60' : ''}`}
+            >
+              Generate summary
+            </button>
+          </div>
         </div>
       </div>
     </ModalWrapper>

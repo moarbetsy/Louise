@@ -11,18 +11,24 @@ export const NavItem: React.FC<{
 }> = ({ icon, label, active, onClick, badge }) => (
   <button
     onClick={onClick}
-    className={`flex items-center gap-3 w-full text-base p-3 rounded-lg transition-all ${
+    className={`group flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm transition-all duration-200 ${
       active
-        ? 'bg-white/10 text-primary font-semibold'
-        : 'hover:bg-white/5 text-muted font-medium'
+        ? 'glass-effect text-primary shadow-glass'
+        : 'text-white/60 hover:text-primary hover:bg-white/10'
     }`}
   >
-    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${active ? 'bg-indigo-500 text-white' : 'bg-white/5 text-primary'}`}>
+    <div
+      className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all ${
+        active
+          ? 'glass-icon text-accent shadow-glass'
+          : 'glass-icon text-white/70 group-hover:text-primary'
+      }`}
+    >
       {icon}
     </div>
     <div className="flex-1 text-left">{label}</div>
     {badge && badge > 0 ? (
-      <div className="bg-purple-500 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full">
+      <div className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent shadow-glass">
         {badge}
       </div>
     ) : null}
@@ -36,8 +42,8 @@ export const MobileNavItem: React.FC<{
 }> = ({ icon, active, onClick }) => (
   <button
     onClick={onClick}
-    className={`relative flex-1 flex items-center justify-center p-3 text-muted transition-colors ${
-      active ? 'text-indigo-400' : 'hover:text-primary'
+    className={`relative flex flex-1 items-center justify-center p-3 text-white/60 transition-all ${
+      active ? 'text-accent' : 'hover:text-primary'
     }`}
   >
     {icon}
@@ -45,20 +51,43 @@ export const MobileNavItem: React.FC<{
       // FIX: Correctly type framer-motion component props
       <motion.div
         layoutId="mobile-nav-active"
-        className="absolute bottom-[-8px] h-[3px] w-8 bg-indigo-400 rounded-full"
+        className="absolute bottom-[-8px] h-[3px] w-8 rounded-full bg-accent"
       />
     )}
   </button>
 );
 
-export const GlassCard: React.FC<{ title?: string; children: ReactNode }> = ({ title, children }) => (
-    <div className="glass-wrap">
-        <div className="glass p-6">
-            {title && <h2 className="text-xl font-bold text-primary mb-6">{title}</h2>}
-            {children}
-        </div>
-    </div>
-);
+type GlassCardProps = {
+  title?: string;
+  subtitle?: string;
+  className?: string;
+  children: ReactNode;
+};
+
+export const GlassCard: React.FC<GlassCardProps> = ({
+  title,
+  subtitle,
+  className,
+  children,
+}) => {
+  return (
+    <section
+      className={`glass-effect rounded-3xl p-6 shadow-glass ${className || ''}`}
+    >
+      {(title || subtitle) && (
+        <header className="mb-5">
+          {title ? (
+            <h2 className="text-lg font-semibold text-primary">{title}</h2>
+          ) : null}
+          {subtitle ? (
+            <p className="mt-1 text-sm text-muted">{subtitle}</p>
+          ) : null}
+        </header>
+      )}
+      {children}
+    </section>
+  );
+};
 
 export const ActionCard: React.FC<{
   icon: ReactNode;
@@ -67,66 +96,70 @@ export const ActionCard: React.FC<{
   onClick: () => void;
   variant?: 'default' | 'danger';
 }> = ({ icon, title, description, onClick, variant = 'default' }) => {
-  const colors = {
-    default: {
-        icon: 'group-hover:text-indigo-400',
-        text: 'text-indigo-400',
-        iconBg: 'group-hover:bg-indigo-500/10'
-    },
-    danger: {
-        icon: 'group-hover:text-purple-400',
-        text: 'text-purple-400',
-        iconBg: 'group-hover:bg-purple-500/10'
-    }
-  };
-  const color = colors[variant];
+  const isDanger = variant === 'danger';
+  const wrapperClasses = `group h-full rounded-3xl glass-effect text-left shadow-glass transition-transform duration-200 hover:-translate-y-1`;
+  const iconClasses = `inline-flex w-fit rounded-2xl p-3 transition-colors ${
+    isDanger
+      ? 'glass-icon text-rose-300'
+      : 'glass-icon text-emerald-300'
+  }`;
+  const ctaClasses = `mt-auto text-sm font-semibold ${
+    isDanger ? 'text-rose-300' : 'text-emerald-300'
+  }`;
 
   return (
-    <button
-      onClick={onClick}
-      className="glass-wrap group h-full"
-    >
-      <div className="glass p-6 text-left h-full flex flex-col transition-all duration-300 border border-transparent group-hover:border-[var(--glass-border-hover)] group-hover:bg-[var(--glass-bg-hover)]">
-          <div className={`bg-white/5 p-3 rounded-lg w-fit text-primary mb-4 transition-colors ${color.iconBg} ${color.icon}`}>
-              {icon}
-          </div>
-          <h3 className="font-bold text-lg text-primary">{title}</h3>
-          <p className="text-sm text-muted mt-1 flex-grow">{description}</p>
-          <div className={`text-sm font-bold ${color.text} mt-4 self-start transition-transform group-hover:translate-x-1`}>
-              Proceed &rarr;
-          </div>
+    <button onClick={onClick} className={wrapperClasses}>
+      <div className="flex h-full flex-col gap-4 rounded-[1.25rem] p-6">
+        <div className={iconClasses}>
+          {icon}
+        </div>
+        <h3 className="text-lg font-semibold text-primary">{title}</h3>
+        <p className="mt-1 flex-grow text-sm text-muted">{description}</p>
+        <div className={ctaClasses}>Open</div>
       </div>
     </button>
   );
 };
 
+export const MetricCard: React.FC<{ metric: Metric; onClick?: () => void }> = ({
+  metric,
+  onClick,
+}) => {
+  const colorClasses = {
+    green: 'from-emerald-400/25 via-transparent to-transparent text-emerald-300',
+    blue: 'from-accent/25 via-transparent to-transparent text-accent',
+    purple: 'from-violet-400/25 via-transparent to-transparent text-violet-300',
+    orange: 'from-amber-400/25 via-transparent to-transparent text-amber-300',
+  } as const;
+  const colorClass =
+    colorClasses[metric.color as keyof typeof colorClasses] ||
+    colorClasses.green;
 
-export const MetricCard: React.FC<{ metric: Metric, onClick?: () => void }> = ({ metric, onClick }) => {
-    const colorClasses = {
-        green: 'from-green-500/10 to-green-500/0 text-green-400',
-        blue: 'from-blue-500/10 to-blue-500/0 text-blue-400',
-        purple: 'from-purple-500/10 to-purple-500/0 text-purple-400',
-        orange: 'from-orange-500/10 to-orange-500/0 text-orange-400',
-    };
-    const colorClass = colorClasses[metric.color as keyof typeof colorClasses] || colorClasses.green;
+  const Wrapper = onClick ? 'button' : 'div';
 
-    const Wrapper = onClick ? 'button' : 'div';
-    
-    return (
-        <Wrapper
-            onClick={onClick}
-            className={`glass-wrap group ${onClick ? 'cursor-pointer' : ''}`}
+  return (
+    <Wrapper
+      onClick={onClick}
+      className={`glass-effect rounded-3xl shadow-glass ${
+        onClick
+          ? 'cursor-pointer transition-transform duration-200 hover:-translate-y-1'
+          : ''
+      }`}
+    >
+      <div className="flex h-full items-start gap-6 rounded-3xl p-6">
+        <div
+          className={`flex h-20 w-20 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${colorClass}`}
         >
-            <div className={`glass p-6 text-left h-full flex items-start gap-6 transition-all duration-300 border border-transparent ${onClick ? 'group-hover:border-[var(--glass-border-hover)] group-hover:bg-[var(--glass-bg-hover)]' : ''}`}>
-                <div className={`w-20 h-20 rounded-2xl flex-shrink-0 flex items-center justify-center bg-gradient-to-br ${colorClass}`}>
-                    {metric.icon}
-                </div>
-                <div className="flex-grow">
-                    <p className="text-sm font-medium text-muted">{metric.title}</p>
-                    <p className="text-4xl font-bold tracking-tight text-primary mt-1">{metric.value}</p>
-                    <p className="text-xs text-muted mt-2">{metric.subtitle}</p>
-                </div>
-            </div>
-        </Wrapper>
-    );
+          {metric.icon}
+        </div>
+        <div className="flex-grow">
+          <p className="text-sm font-medium text-muted">{metric.title}</p>
+          <p className="mt-1 text-3xl font-semibold tracking-tight text-primary">
+            {metric.value}
+          </p>
+          <p className="mt-2 text-xs text-muted">{metric.subtitle}</p>
+        </div>
+      </div>
+    </Wrapper>
+  );
 };

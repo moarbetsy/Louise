@@ -1,6 +1,10 @@
-import type { Product, OrderItem, Client } from '../types';
+import type { Product, OrderItem, Client, ProductTier } from '../types';
 
 type EntityForDisplay = 'client' | 'product' | 'order' | 'expense';
+
+type FormatEntityDisplayIdOptions = {
+  includeEntityPrefix?: boolean;
+};
 
 const DISPLAY_ID_PREFIX: Record<EntityForDisplay, string> = {
   client: 'Client',
@@ -19,7 +23,8 @@ const DISPLAY_ID_PAD_LENGTH: Record<EntityForDisplay, number> = {
 export function formatEntityDisplayId(
   entity: EntityForDisplay,
   displayId?: number | null,
-  fallback?: string
+  fallback?: string,
+  options?: FormatEntityDisplayIdOptions
 ): string {
   if (displayId == null) {
     return fallback ?? '';
@@ -27,7 +32,64 @@ export function formatEntityDisplayId(
   const prefix = DISPLAY_ID_PREFIX[entity];
   const padLength = DISPLAY_ID_PAD_LENGTH[entity];
   const padded = String(displayId).padStart(padLength, '0');
-  return `${prefix} #${padded}`;
+  const includePrefix = options?.includeEntityPrefix ?? true;
+  return includePrefix ? `${prefix} #${padded}` : `#${padded}`;
+}
+
+export function calculateTieredPrice(
+  tiers: ProductTier[] | undefined,
+  quantity: number,
+  fallbackPerUnit?: number
+): number {
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    return 0;
+  }
+
+  const validTiers = (tiers ?? [])
+    .map(tier => ({
+      ...tier,
+      quantity: Number(tier.quantity),
+      price: Number(tier.price),
+    }))
+    .filter(tier => Number.isFinite(tier.quantity) && tier.quantity > 0 && Number.isFinite(tier.price) && tier.price > 0);
+
+  if (validTiers.length === 0) {
+    const perUnit = Number.isFinite(fallbackPerUnit) && (fallbackPerUnit ?? 0) > 0
+      ? fallbackPerUnit as number
+      : 0;
+    return Math.round(quantity * perUnit * 100) / 100;
+  }
+
+  const tiersByQuantityDesc = [...validTiers].sort((a, b) => b.quantity - a.quantity);
+  const epsilon = 1e-6;
+  let remaining = quantity;
+  let total = 0;
+
+  for (const tier of tiersByQuantityDesc) {
+    if (remaining + epsilon < tier.quantity) {
+      continue;
+    }
+    const count = Math.floor((remaining + epsilon) / tier.quantity);
+    if (count <= 0) {
+      continue;
+    }
+    total += count * tier.price;
+    remaining -= count * tier.quantity;
+    if (remaining <= epsilon) {
+      remaining = 0;
+      break;
+    }
+  }
+
+  if (remaining > epsilon) {
+    const smallestTier = validTiers.reduce((smallest, candidate) =>
+      candidate.quantity < smallest.quantity ? candidate : smallest
+    );
+    const perUnit = smallestTier.price / smallestTier.quantity;
+    total += remaining * perUnit;
+  }
+
+  return Math.round(total * 100) / 100;
 }
 
 export function calculateCost(product: Product, quantity: number): number {

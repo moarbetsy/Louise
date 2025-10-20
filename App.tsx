@@ -6,15 +6,15 @@ import React, { useEffect, useState, useMemo, useRef, useCallback, Suspense } fr
 // FIX: The `Mask` icon does not exist in `lucide-react`. Replaced with `EyeOff` for the private mode toggle.
 import {
   ShoppingCart, Users, Box, Plus, Home, Search,
-  Package, ReceiptText, History, LogOut, Settings, DollarSign, Trash2, TrendingUp, Calendar, AreaChart, Calculator, Save, X, Download, ArrowUpDown, ArrowUp, ArrowDown, Upload, EyeOff, ArrowUpRight
+  Package, ReceiptText, History, LogOut, Settings, DollarSign, Trash2, TrendingUp, AreaChart, Calculator, Bot, Save, X, Download, ArrowUpDown, ArrowUp, ArrowDown, ArrowLeft, Upload, Eye, EyeOff, ArrowUpRight, AlertTriangle, SlidersHorizontal, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 // Recharts is only used in the reports view; it's loaded lazily with that page
 
 import { useLocalStorage } from './hooks/useLocalStorage';
-import type { Page, Order, Client, Product, OrderItem, Expense, LogEntry, Metric, DashboardStat } from './types';
+import type { Page, Order, Client, Product, OrderItem, Expense, LogEntry, Metric, DashboardStat, PaymentMethods } from './types';
 import { initialClients, initialProducts, initialOrders, initialExpenses, initialLogs } from './lib/data';
-import { calculateCost, exportToCsv, groupOrderItems, buildClientShortNameMap, formatEntityDisplayId } from './lib/utils';
+import { calculateCost, exportToCsv, groupOrderItems, buildClientShortNameMap, formatEntityDisplayId, calculateTieredPrice } from './lib/utils';
 import { initCountersFromData, getNextDisplayId } from './lib/id';
 // Lazily load heavy modal bundle to speed up initial load
 const CreateOrderModal = React.lazy(() => import('./components/modals').then(m => ({ default: m.CreateOrderModal })));
@@ -34,6 +34,7 @@ const CreateExpenseModal = React.lazy(() => import('./components/modals').then(m
 const CalculatorModal = React.lazy(() => import('./components/modals').then(m => ({ default: m.CalculatorModal })));
 const AlertModal = React.lazy(() => import('./components/modals').then(m => ({ default: m.AlertModal })));
 const MarkPaidModal = React.lazy(() => import('./components/modals').then(m => ({ default: m.MarkPaidModal })));
+const AssistantModal = React.lazy(() => import('./components/modals').then(m => ({ default: m.AssistantModal })));
 import { NavItem, MobileNavItem, GlassCard, ActionCard } from './components/common';
 import LoginPage from './components/LoginPage';
 import { isSupabaseEnabled } from './lib/supabase';
@@ -66,6 +67,20 @@ const SortableHeader: React.FC<{
   );
 };
 
+type AssistantDraft = {
+  client: Client;
+  product: Product;
+  quantity: number;
+  linePrice: number;
+  unitPrice: number;
+  shipping: number;
+  amountPaid: number;
+  discount: number;
+  notes?: string;
+  paymentDueDate?: string;
+  prompt: string;
+};
+
 
 const DashboardPage: React.FC<{
   onNewOrder: () => void;
@@ -89,8 +104,8 @@ const DashboardPage: React.FC<{
         if (!dashboardStats || dashboardStats.length === 0) return;
 
         const timer = setTimeout(() => {
-            setCurrentStatIndex((prevIndex) => (prevIndex + 1) % dashboardStats.length);
-        }, 5000); // Change stat every 5 seconds
+            setCurrentStatIndex(prevIndex => (prevIndex + 1) % dashboardStats.length);
+        }, 5000);
 
         return () => clearTimeout(timer);
     }, [currentStatIndex, dashboardStats]);
@@ -184,6 +199,16 @@ const DashboardPage: React.FC<{
         const et = typeof pm.etransfer === 'number' ? pm.etransfer : (pm.etransfer ? (o.amountPaid || 0) : 0);
         return s + (et || 0);
     }, 0), [todaysOrders]);
+
+    useEffect(() => {
+        if (!dashboardStats || dashboardStats.length === 0) return;
+
+        const timer = setTimeout(() => {
+            setCurrentStatIndex((prevIndex) => (prevIndex + 1) % dashboardStats.length);
+        }, 5000); // Change stat every 5 seconds
+
+        return () => clearTimeout(timer);
+    }, [currentStatIndex, dashboardStats]);
 
     // Quick expense form moved to header on homepage
 
@@ -451,9 +476,9 @@ const OrdersPage: React.FC<{ orders: Order[]; clients: Client[]; products: Produ
             });
         }
 
-        return sortableItems;
+    return sortableItems;
 
-    }, [orders, clients, searchQuery, sortConfig, clientShortNames]);
+  }, [orders, clients, searchQuery, sortConfig, clientShortNames]);
 
     const handleSort = (key: string) => {
         let direction: 'asc' | 'desc' = 'asc';
@@ -531,7 +556,31 @@ const OrdersPage: React.FC<{ orders: Order[]; clients: Client[]; products: Produ
                                 ? formatEntityDisplayId('client', client.displayId, client.id)
                                 : (clientShortNames[client.id] ?? client.name))
                             : 'Unknown Client';
-                        const orderLabel = formatEntityDisplayId('order', o.displayId, o.id);
+                        const orderLabel = formatEntityDisplayId('order', o.displayId, o.id, { includeEntityPrefix: false });
+                        const outstanding = Math.max(0, Math.round(o.total - (o.amountPaid || 0)));
+                        const dueDateStr = o.paymentDueDate || (typeof o.paymentMethods?.dueDate === 'string' ? o.paymentMethods.dueDate : '');
+                        const dueInfo = (() => {
+                            if (outstanding <= 0) return null;
+                            if (!dueDateStr) {
+                                return { text: 'No due date set', className: 'text-muted' };
+                            }
+                            const dueDate = new Date(`${dueDateStr}T00:00:00`);
+                            if (Number.isNaN(dueDate.getTime())) {
+                                return { text: 'Due date unavailable', className: 'text-muted' };
+                            }
+                            const today = new Date();
+                            today.setHours(0, 0, 0, 0);
+                            const diff = Math.floor((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                            if (diff < 0) {
+                                const daysLate = Math.abs(diff);
+                                return { text: `Overdue by ${daysLate} day${daysLate === 1 ? '' : 's'} (${dueDateStr})`, className: 'text-red-300' };
+                            }
+                            if (diff === 0) {
+                                return { text: `Due today (${dueDateStr})`, className: 'text-amber-300' };
+                            }
+                            const label = diff === 1 ? 'Due in 1 day' : `Due in ${diff} days`;
+                            return { text: `${label} (${dueDateStr})`, className: diff <= 3 ? 'text-amber-300' : 'text-emerald-300' };
+                        })();
                         return (
                             <tr key={o.id} onClick={() => onOrderClick(o)} onMouseEnter={(e) => handleRowHover(o.id, e)} className="group border-b border-white/5 text-base hover:bg-white/5 cursor-pointer transition-colors">
                                 <td className="p-3 font-mono text-primary">{orderLabel}</td>
@@ -552,7 +601,7 @@ const OrdersPage: React.FC<{ orders: Order[]; clients: Client[]; products: Produ
                                 <td className="p-3">
                                     <button
                                         type="button"
-                                        className={`status-badge ${statusPresentation.className} ${isCompleted ? 'cursor-default opacity-80' : 'cursor-pointer transition-colors hover:ring-2 hover:ring-cyan-400/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80'} disabled:pointer-events-none`}
+                                        className={`status-badge inline-flex items-center gap-2 ${statusPresentation.className} ${isCompleted ? 'cursor-default opacity-80' : 'cursor-pointer transition-colors hover:ring-2 hover:ring-cyan-400/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80'} disabled:pointer-events-none`}
                                         onClick={(e) => {
                                             if (isCompleted) return;
                                             e.stopPropagation();
@@ -562,7 +611,12 @@ const OrdersPage: React.FC<{ orders: Order[]; clients: Client[]; products: Produ
                                         aria-label={isCompleted ? 'Order is paid' : 'Mark as paid'}
                                         title={statusPresentation.tooltip}
                                     >
-                                        {statusPresentation.label}
+                                        <span>{statusPresentation.label}</span>
+                                        {dueInfo && (
+                                            <span className={`text-xs ${dueInfo.className}`}>
+                                                • {dueInfo.text}
+                                            </span>
+                                        )}
                                     </button>
                                 </td>
                             </tr>
@@ -715,7 +769,7 @@ const ClientsPage: React.FC<{
                     </tbody>
                     <tfoot>
                         <tr className="border-t-2 border-white/10 font-bold text-base bg-white/5 text-primary">
-                            <td className="p-3">Totals ({sortedAndFilteredClients.length} clients)</td>
+                            <td className="p-3">Totals</td>
                             <td className="p-3">{totals.orders}</td>
                             <td className="p-3">${Math.round(totals.spent).toLocaleString()}</td>
                             <td className="p-3">${Math.round(totals.balance).toLocaleString()}</td>
@@ -732,19 +786,114 @@ const ProductsPage: React.FC<{
     searchQuery: string; 
     onProductClick: (product: Product) => void; 
     onUpdateStock: (product: Product) => void;
+    onSaveStockInline: (updates: { productId: string; stock: number }[]) => void;
     isPrivateMode: boolean;
-}> = ({ products, searchQuery, onProductClick, onUpdateStock, isPrivateMode }) => {
+}> = ({ products, searchQuery, onProductClick, onUpdateStock, onSaveStockInline, isPrivateMode }) => {
     const [productSort, setProductSort] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
-    const getSizeDisplay = (product: Product) => {
-        switch (product.type) {
-            case 'g':
-                return 'Gram (g)';
-            case 'ml':
-                return 'Milliliter (mL)';
-            case 'unit':
-                return 'Unit';
-            default:
-                return (product.type as string).toUpperCase();
+    const [isStockEditing, setIsStockEditing] = useState(false);
+    const [stockDrafts, setStockDrafts] = useState<Record<string, string>>({});
+    const [stockErrors, setStockErrors] = useState<Record<string, string>>({});
+    const formatStockDraft = useCallback((product: Product) => {
+        if (product.type === 'unit') {
+            return Math.round(product.stock).toString();
+        }
+        const fixed = Math.round(product.stock * 100) / 100;
+        return fixed.toString();
+    }, []);
+
+    const enterStockEditMode = () => {
+        const initialDrafts: Record<string, string> = {};
+        products.forEach(product => {
+            initialDrafts[product.id] = formatStockDraft(product);
+        });
+        setStockDrafts(initialDrafts);
+        setStockErrors({});
+        setIsStockEditing(true);
+    };
+
+    const exitStockEditMode = () => {
+        setIsStockEditing(false);
+        setStockDrafts({});
+        setStockErrors({});
+    };
+
+    useEffect(() => {
+        if (!isStockEditing) return;
+        setStockDrafts(prev => {
+            const next: Record<string, string> = {};
+            products.forEach(product => {
+                next[product.id] = Object.prototype.hasOwnProperty.call(prev, product.id)
+                    ? prev[product.id]
+                    : formatStockDraft(product);
+            });
+            return next;
+        });
+    }, [formatStockDraft, isStockEditing, products]);
+
+    const handleStockDraftChange = (productId: string, value: string) => {
+        setStockDrafts(prev => ({ ...prev, [productId]: value }));
+        setStockErrors(prev => {
+            if (!prev[productId]) return prev;
+            const { [productId]: _removed, ...rest } = prev;
+            return rest;
+        });
+    };
+
+    const handleStockSave = () => {
+        const pendingUpdates: { productId: string; stock: number }[] = [];
+        const nextErrors: Record<string, string> = {};
+
+        products.forEach(product => {
+            if (!Object.prototype.hasOwnProperty.call(stockDrafts, product.id)) {
+                return;
+            }
+            const raw = stockDrafts[product.id];
+            const trimmed = raw.trim();
+            if (!trimmed.length) {
+                nextErrors[product.id] = 'Required';
+                return;
+            }
+            const parsed = Number.parseFloat(trimmed);
+            if (!Number.isFinite(parsed)) {
+                nextErrors[product.id] = 'Invalid number';
+                return;
+            }
+            if (parsed < 0) {
+                nextErrors[product.id] = 'Must be ≥ 0';
+                return;
+            }
+            if (product.type === 'unit' && !Number.isInteger(parsed)) {
+                nextErrors[product.id] = 'Whole units only';
+                return;
+            }
+
+            const hasChanged = Math.abs(parsed - product.stock) > 0.0001;
+            if (hasChanged) {
+                pendingUpdates.push({ productId: product.id, stock: parsed });
+            }
+        });
+
+        if (Object.keys(nextErrors).length) {
+            setStockErrors(nextErrors);
+            return;
+        }
+
+        if (pendingUpdates.length) {
+            onSaveStockInline(pendingUpdates);
+        }
+
+        exitStockEditMode();
+    };
+
+    const handleStockCancel = () => {
+        exitStockEditMode();
+    };
+
+    const handleStockToggle = () => {
+        if (isStockEditing) {
+            handleStockCancel();
+        } else {
+            enterStockEditMode();
         }
     };
     const sortedAndFilteredProducts = useMemo(() => {
@@ -766,12 +915,10 @@ const ProductsPage: React.FC<{
             switch (productSort.key) {
                 case 'stock':
                     aValue = a.stock; bValue = b.stock; break;
+                case 'cost':
+                    aValue = a.costPerUnit ?? 0; bValue = b.costPerUnit ?? 0; break;
                 case 'displayId':
                     aValue = a.displayId ?? 0; bValue = b.displayId ?? 0; break;
-                case 'size':
-                    aValue = getSizeDisplay(a).toLowerCase();
-                    bValue = getSizeDisplay(b).toLowerCase();
-                    break;
                 case 'name':
                 default:
                     aValue = a.name.toLowerCase(); bValue = b.name.toLowerCase();
@@ -794,32 +941,101 @@ const ProductsPage: React.FC<{
                     <thead>
                     <tr className="text-sm text-muted border-b border-white/10">
                         <th className="p-3"><SortableHeader title="Product" columnKey="name" sortConfig={productSort} onSort={handleProductSort} /></th>
-                        <th className="p-3"><SortableHeader title="Size" columnKey="size" sortConfig={productSort} onSort={handleProductSort} /></th>
-                        <th className="p-3"><SortableHeader title="Stock" columnKey="stock" sortConfig={productSort} onSort={handleProductSort} /></th>
+                        <th className="p-3"><SortableHeader title="Cost" columnKey="cost" sortConfig={productSort} onSort={handleProductSort} /></th>
+                        <th className="p-3">
+                            <div className="flex items-center gap-2">
+                                <SortableHeader title="Stock" columnKey="stock" sortConfig={productSort} onSort={handleProductSort} className="flex-1" />
+                                <button
+                                    type="button"
+                                    onClick={handleStockToggle}
+                                    aria-label={isStockEditing ? 'Exit inline stock edit mode' : 'Enter inline stock edit mode'}
+                                    aria-pressed={isStockEditing}
+                                    title={isStockEditing ? 'Close inline stock edit mode' : 'Edit stock inline'}
+                                    className={`p-1 rounded border border-white/10 text-muted hover:text-primary hover:bg-white/10 transition-colors ${isStockEditing ? 'bg-white/10 text-primary' : ''}`}
+                                >
+                                    <SlidersHorizontal size={16} />
+                                </button>
+                                {isStockEditing ? (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={handleStockSave}
+                                            aria-label="Save stock changes"
+                                            title="Save all stock edits"
+                                            className="p-1 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+                                        >
+                                            <Check size={16} />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleStockCancel}
+                                            aria-label="Cancel stock changes"
+                                            title="Cancel inline stock edits"
+                                            className="p-1 rounded border border-white/10 text-muted hover:text-primary hover:bg-white/10 transition-colors"
+                                        >
+                                            <X size={16} />
+                                        </button>
+                                    </>
+                                ) : null}
+                            </div>
+                        </th>
                     </tr>
                     </thead>
                     <tbody>
                     {sortedAndFilteredProducts.map(p => {
                         const inactive = Boolean(p.inactive) || p.stock <= 0;
-                        const rowClasses = `border-b border-white/5 text-base hover:bg-white/5 cursor-pointer transition-colors ${inactive ? 'opacity-60' : ''}`;
+                        const interactiveClasses = isStockEditing ? '' : 'hover:bg-white/5 cursor-pointer transition-colors';
+                        const rowClasses = `border-b border-white/5 text-base ${interactiveClasses} ${inactive ? 'opacity-60' : ''}`;
                         const productLabel = formatEntityDisplayId('product', p.displayId, p.id);
                         const nameDisplay = isPrivateMode ? productLabel : p.name;
-                        const sizeDisplay = getSizeDisplay(p);
+                        const hasCost = Number.isFinite(p.costPerUnit) && p.costPerUnit > 0;
+                        const roundedCost = Math.round(p.costPerUnit);
+                        const unitSuffix = p.type === 'unit' ? 'unit' : p.type;
+                        const costDisplay = hasCost ? `$${roundedCost} / ${unitSuffix}` : '—';
+                        const stockDraftValue = stockDrafts[p.id] ?? formatStockDraft(p);
+                        const stockError = stockErrors[p.id];
+                        const stockDisplay = `${formatStockDraft(p)}${p.type !== 'unit' ? ` ${p.type}` : ''}`;
 
                         return (
-                            <tr key={p.id} onClick={() => onProductClick(p)} className={rowClasses}>
+                            <tr
+                                key={p.id}
+                                onClick={() => {
+                                    if (!isStockEditing) {
+                                        onProductClick(p);
+                                    }
+                                }}
+                                className={rowClasses}
+                            >
                                 <td className={`p-3 font-semibold ${inactive ? 'text-muted' : 'text-primary'}`}>{nameDisplay}</td>
-                                <td className="p-3 text-muted">{sizeDisplay}</td>
+                                <td className={`p-3 ${inactive ? 'text-muted' : 'text-primary'}`}>{costDisplay}</td>
                                 <td className="p-3">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); onUpdateStock(p); }}
-                                    title="Click to edit stock"
-                                    className={`inline-block rounded px-2 py-1 font-medium ${inactive ? 'text-muted' : 'text-primary'} hover:bg-white/10 hover:text-primary transition-colors cursor-pointer`}
-                                    aria-label={`Edit stock for ${nameDisplay}`}
-                                  >
-                                    {Math.floor(p.stock)}{p.type !== 'unit' ? ` ${p.type}` : ''}
-                                  </button>
+                                  {isStockEditing ? (
+                                    <div className="flex flex-col gap-2" onClick={e => e.stopPropagation()}>
+                                      <div className="flex items-baseline gap-3">
+                                        <input
+                                          type="number"
+                                          inputMode="decimal"
+                                          step={p.type === 'unit' ? 1 : 0.01}
+                                          value={stockDraftValue}
+                                          onChange={e => handleStockDraftChange(p.id, e.target.value)}
+                                          className={`w-24 bg-white/10 border ${stockError ? 'border-red-400/60 focus:ring-red-400/40' : 'border-white/10 focus:ring-indigo-400/40'} rounded-md px-3 py-2 text-lg font-semibold text-primary text-right placeholder:text-muted focus:outline-none focus:ring-2`}
+                                          aria-label={`Set stock for ${nameDisplay}`}
+                                          min={0}
+                                        />
+                                      </div>
+                                      {stockError ? <span className="text-xs text-red-400">{stockError}</span> : null}
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); onUpdateStock(p); }}
+                                      title="Click to adjust stock"
+                                      className={`inline-block rounded px-2 py-1 font-medium ${inactive ? 'text-muted' : 'text-primary'} hover:bg-white/10 hover:text-primary transition-colors cursor-pointer`}
+                                      aria-label={`Adjust stock for ${nameDisplay}`}
+                                    >
+                                      {stockDisplay}
+                                    </button>
+                                  )}
                                 </td>
                             </tr>
                         );
@@ -1040,9 +1256,10 @@ const SettingsPage: React.FC<{
     onSyncSupabase: () => void;
     onLogout: () => void;
     onDeleteAllData: () => void;
+    onResetDemoData: () => void;
     dataSource: 'local' | 'demo' | 'supabase' | 'empty';
     supabaseEnabled: boolean;
-}> = ({ setPage, onExport, onImport, onSyncSupabase, onLogout, onDeleteAllData, dataSource, supabaseEnabled }) => {
+}> = ({ setPage, onExport, onImport, onSyncSupabase, onLogout, onDeleteAllData, onResetDemoData, dataSource, supabaseEnabled }) => {
     const importInputRef = useRef<HTMLInputElement>(null);
 
     const handleImportClick = () => {
@@ -1065,92 +1282,191 @@ const SettingsPage: React.FC<{
     }[dataSource];
 
     return (
-        <div className="space-y-8 mt-6">
-            <GlassCard title="Data Source & Sync">
-                <div className="space-y-2 text-sm text-muted">
-                    <p>
-                        Currently reading data from
-                        <span className="text-primary font-medium"> {readableSource}</span>.
-                    </p>
-                    <p>
-                        Supabase integration is
-                        <span className={`font-medium ${supabaseEnabled ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {supabaseEnabled ? ' active' : ' disabled'}
-                        </span>
-                        .
-                    </p>
-                    {supabaseEnabled ? (
-                        <p>
-                            Use "Sync to Supabase" to push any local-only changes or migrate from the demo dataset.
-                        </p>
-                    ) : (
-                        <p>
-                            Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to `.env.local` to enable syncing with Supabase.
-                        </p>
-                    )}
+        <div className="mt-6 space-y-8">
+            <GlassCard
+                title="Quick Actions"
+                subtitle="Jump straight to the workflows and maintenance tasks you use most often."
+            >
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    <ActionCard
+                        icon={<History size={24} />}
+                        title="Activity Log"
+                        description="Track all actions performed within the dashboard."
+                        onClick={() => setPage('log')}
+                    />
+                    <ActionCard
+                        icon={<AreaChart size={24} />}
+                        title="Reports"
+                        description="Visual breakdown of sales and expense data."
+                        onClick={() => setPage('reports')}
+                    />
+                    <ActionCard
+                        icon={<Download size={24} />}
+                        title="Export Data"
+                        description="Download all your data as a single JSON file."
+                        onClick={() => onExport('all')}
+                    />
+                    <ActionCard
+                        icon={<Upload size={24} />}
+                        title="Import Data"
+                        description="Upload a previously exported JSON file to restore data."
+                        onClick={handleImportClick}
+                    />
+                    <input
+                        type="file"
+                        ref={importInputRef}
+                        onChange={handleFileChange}
+                        accept=".json"
+                        className="hidden"
+                    />
+                    <ActionCard
+                        icon={<Save size={24} />}
+                        title="Sync to Supabase"
+                        description="Push all current local data to your Supabase tables."
+                        onClick={onSyncSupabase}
+                    />
+                    <ActionCard
+                        icon={<LogOut size={24} />}
+                        title="Log Out"
+                        description="Sign out of your current session."
+                        onClick={onLogout}
+                        variant="danger"
+                    />
                 </div>
             </GlassCard>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <ActionCard
-                    icon={<ReceiptText size={24} />}
-                    title="Transactions"
-                    description="View a complete history of all income and expenses."
-                    onClick={() => setPage('transactions')}
-                />
-                <ActionCard
-                    icon={<History size={24} />}
-                    title="Activity Log"
-                    description="Track all actions performed within the dashboard."
-                    onClick={() => setPage('log')}
-                />
-                <ActionCard
-                    icon={<AreaChart size={24} />}
-                    title="Reports"
-                    description="Visual breakdown of sales and expense data."
-                    onClick={() => setPage('reports')}
-                />
-                <ActionCard
-                    icon={<Download size={24} />}
-                    title="Export Data"
-                    description="Download all your data as a single JSON file."
-                    onClick={() => onExport('all')}
-                />
-                <ActionCard
-                    icon={<Upload size={24} />}
-                    title="Import Data"
-                    description="Upload a previously exported JSON file to restore data."
-                    onClick={handleImportClick}
-                />
-                <input type="file" ref={importInputRef} onChange={handleFileChange} accept=".json" className="hidden" />
-                <ActionCard
-                    icon={<Save size={24} />}
-                    title="Sync to Supabase"
-                    description="Push all current local data to your Supabase tables."
-                    onClick={onSyncSupabase}
-                />
-                <ActionCard
-                    icon={<LogOut size={24} />}
-                    title="Log Out"
-                    description="Sign out of your current session."
-                    onClick={onLogout}
-                    variant="danger"
-                />
-            </div>
-            
-            <div className="mt-12">
-                <h2 className="text-lg font-bold text-red-500 mb-2">Danger Zone</h2>
-                <div className="glass p-6 border-red-500/30 border">
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div>
-                            <h3 className="font-bold text-primary">Delete All Data</h3>
-                            <p className="text-sm text-muted mt-1 max-w-xl">Permanently delete all clients, products, orders, expenses, and activity logs. This action is irreversible and cannot be undone.</p>
-                        </div>
+
+            <GlassCard
+                title="Workspace Overview"
+                subtitle="Reference where your data lives and how it stays in sync."
+            >
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="space-y-3 text-base text-muted">
+                        <p>
+                            Currently reading data from
+                            <span className="text-primary font-semibold"> {readableSource}</span>.
+                        </p>
+                        <p>
+                            Supabase integration is{' '}
+                            <span
+                                className={`font-semibold ${
+                                    supabaseEnabled ? 'text-[rgba(37,211,102,0.9)]' : 'text-[rgba(251,191,36,0.9)]'
+                                }`}
+                            >
+                                {supabaseEnabled ? 'active' : 'disabled'}
+                            </span>
+                            .
+                        </p>
+                        <p>
+                            {supabaseEnabled
+                                ? 'Use "Sync to Supabase" whenever you want to back up or migrate your local edits.'
+                                : 'Add your Supabase credentials to .env.local to enable cloud sync for this workspace.'}
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4">
+                        <span
+                            className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
+                                supabaseEnabled
+                                    ? 'bg-[rgba(37,211,102,0.12)] text-[rgba(37,211,102,0.95)]'
+                                    : 'bg-[rgba(251,191,36,0.12)] text-[rgba(251,191,36,0.95)]'
+                            }`}
+                        >
+                            {supabaseEnabled ? 'Connected' : 'Offline'}
+                        </span>
+                        <div className="text-xs text-muted">Last sync runs when you click "Sync to Supabase".</div>
+                    </div>
+                </div>
+            </GlassCard>
+
+            <GlassCard
+                title="Supabase Integration"
+                subtitle="Configuration reminders for staying in lockstep with your cloud database."
+            >
+                <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                    <section>
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-primary">
+                            Environment Keys
+                        </h3>
+                        <ul className="mt-3 space-y-2 text-sm text-muted">
+                            <li>
+                                <code className="rounded-md bg-[rgba(255,255,255,0.04)] px-2 py-1 text-[13px] text-primary">
+                                    VITE_SUPABASE_URL
+                                </code>{' '}
+                                – Project API URL.
+                            </li>
+                            <li>
+                                <code className="rounded-md bg-[rgba(255,255,255,0.04)] px-2 py-1 text-[13px] text-primary">
+                                    VITE_SUPABASE_ANON_KEY
+                                </code>{' '}
+                                – Anonymous service role.
+                            </li>
+                            <li>
+                                Store these values in <code className="font-mono">.env.local</code> and restart Vite.
+                            </li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-primary">
+                            Tables Expected
+                        </h3>
+                        <ul className="mt-3 space-y-2 text-sm text-muted">
+                            <li>
+                                <span className="font-medium text-primary">clients</span> – basic profile, contact,
+                                and status fields.
+                            </li>
+                            <li>
+                                <span className="font-medium text-primary">products</span> – SKU, pricing, and stock
+                                levels.
+                            </li>
+                            <li>
+                                <span className="font-medium text-primary">orders</span> &amp;{' '}
+                                <span className="font-medium text-primary">order_items</span> – transactional data.
+                            </li>
+                            <li>
+                                <span className="font-medium text-primary">expenses</span> &amp;{' '}
+                                <span className="font-medium text-primary">logs</span> – cash flow and audit trail.
+                            </li>
+                        </ul>
+                    </section>
+                    <section className="md:col-span-2 xl:col-span-1">
+                        <h3 className="text-sm font-semibold uppercase tracking-wide text-primary">
+                            Sync Tips
+                        </h3>
+                        <ul className="mt-3 space-y-2 text-sm text-muted">
+                            <li>Run "Sync to Supabase" after large data imports to commit changes to the cloud.</li>
+                            <li>Any records deleted locally will be removed from Supabase on the next sync.</li>
+                            <li>
+                                Keep table schemas aligned—new fields require matching Supabase column updates before
+                                sync.
+                            </li>
+                        </ul>
+                    </section>
+                </div>
+            </GlassCard>
+
+            <GlassCard
+                title="Danger Zone"
+                subtitle="These actions permanently affect the data stored in this browser."
+                className="border-[rgba(220,38,38,0.4)] bg-[rgba(68,24,32,0.35)]"
+            >
+                <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+                    <div className="space-y-2 text-base text-muted">
+                        <h3 className="text-lg font-semibold text-primary">Reset or Delete Local Data</h3>
+                        <p className="max-w-xl">
+                            Restore the bundled demo dataset or clear every record from this browser. Sync to Supabase
+                            first if you need a remote backup.
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                        <button onClick={onResetDemoData} className="gloss-btn flex-shrink-0">
+                            <span className="material-symbols-outlined text-xl" aria-hidden="true">refresh</span>
+                            Restore Demo Data
+                        </button>
                         <button onClick={onDeleteAllData} className="gloss-btn gloss-btn-danger flex-shrink-0">
                             <Trash2 size={16} /> Delete All Data
                         </button>
                     </div>
                 </div>
-            </div>
+            </GlassCard>
         </div>
     );
 };
@@ -1428,12 +1744,25 @@ export const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useLocalStorage<boolean>('isAuthenticated', false);
   const [currentUser, setCurrentUser] = useLocalStorage<string>('currentUser', '');
   
-  const [page, setPage] = useState<Page>('dashboard');
+  const [page, setPageState] = useState<Page>('dashboard');
+  const [lastNonSettingsPage, setLastNonSettingsPage] = useState<Page>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [isPrivateMode, setIsPrivateMode] = useLocalStorage('isPrivateMode', true);
   const [dataSource, setDataSource] = useState<'local' | 'demo' | 'supabase' | 'empty'>(() => (
     localStorage.getItem('clients') ? 'local' : 'demo'
   ));
+  const navigate = useCallback((nextPage: Page) => {
+    setPageState(prevPage => {
+      if (nextPage === 'settings') {
+        if (prevPage !== 'settings') {
+          setLastNonSettingsPage(prevPage);
+        }
+      } else {
+        setLastNonSettingsPage(nextPage);
+      }
+      return nextPage;
+    });
+  }, []);
 
   // Data state
   const [clients, setClients] = useLocalStorage<Client[]>('clients', initialClients);
@@ -1558,6 +1887,11 @@ export const App: React.FC = () => {
   const [isClientOrdersModalOpen, setClientOrdersModalOpen] = useState(false);
   const [isLogDetailsModalOpen, setLogDetailsModalOpen] = useState(false);
   const [isCalculatorModalOpen, setCalculatorModalOpen] = useState(false);
+  const [isAssistantModalOpen, setAssistantModalOpen] = useState(false);
+  const [assistantPrompt, setAssistantPrompt] = useState('');
+  const [assistantDraft, setAssistantDraft] = useState<AssistantDraft | null>(null);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [isAssistantBusy, setAssistantBusy] = useState(false);
 
   const [isSessionTimeoutModalOpen, setSessionTimeoutModalOpen] = useState(false);
   const [isConfirmationModalOpen, setConfirmationModalOpen] = useState(false);
@@ -1571,6 +1905,26 @@ export const App: React.FC = () => {
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
   const [confirmationAction, setConfirmationAction] = useState<{ onConfirm: () => void, title: string, message: string } | null>(null);
+
+  const assistantPreview = useMemo(() => {
+    if (!assistantDraft) return null;
+    const subtotal = Number(assistantDraft.linePrice.toFixed(2));
+    const total = Number((assistantDraft.linePrice + assistantDraft.shipping - assistantDraft.discount).toFixed(2));
+    const unit = assistantDraft.quantity > 0 ? Number((assistantDraft.linePrice / assistantDraft.quantity).toFixed(2)) : subtotal;
+    return {
+      clientName: assistantDraft.client.name,
+      productName: assistantDraft.product.name,
+      quantity: assistantDraft.quantity,
+      unitPrice: unit,
+      subtotal,
+      shipping: assistantDraft.shipping,
+      discount: assistantDraft.discount,
+      total,
+      amountPaid: assistantDraft.amountPaid,
+      notes: assistantDraft.notes,
+      paymentDueDate: assistantDraft.paymentDueDate,
+    };
+  }, [assistantDraft]);
 
   const addLog = useCallback(async (action: string, details: Record<string, any>) => {
     const base = { timestamp: new Date().toISOString(), user: currentUser, action, details } as Omit<LogEntry, 'id'>;
@@ -1591,6 +1945,267 @@ export const App: React.FC = () => {
     setAlertModalContent({ title, message });
     setAlertModalOpen(true);
   };
+
+  const resetAssistantState = useCallback(() => {
+    setAssistantPrompt('');
+    setAssistantDraft(null);
+    setAssistantError(null);
+    setAssistantBusy(false);
+  }, []);
+
+  const handleOpenAssistant = useCallback(() => {
+    resetAssistantState();
+    setAssistantModalOpen(true);
+  }, [resetAssistantState]);
+
+  const handleCloseAssistant = useCallback(() => {
+    setAssistantModalOpen(false);
+    setTimeout(() => resetAssistantState(), 200);
+  }, [resetAssistantState]);
+
+  const parsePromptToDraft = useCallback((promptText: string): AssistantDraft => {
+    const compactPrompt = promptText.replace(/\s+/g, ' ').trim();
+    if (!compactPrompt) {
+      throw new Error('Please describe the order so I can prepare it.');
+    }
+
+    const normalizeText = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const tokensFromText = (value: string) => {
+      const normalized = normalizeText(value);
+      return normalized.length ? normalized.split(' ').filter(token => token.length >= 2) : [];
+    };
+
+    const normalizedPrompt = normalizeText(compactPrompt);
+    const promptTokens = tokensFromText(compactPrompt);
+
+    const keywordsPattern = '\\\\b(?:client|customer|buyer|product|item|sku|quantity|qty|amount|units|price|cost|rate|total|shipping|delivery|ship|notes|note|memo|paid|payment|deposit|discount|promo|rebate|fee|surcharge|date|due|deadline|paymentdue|duedate)\\\\b';
+    const sanitize = (value: string) => value.replace(/^[:=,\-\s]+/, '').replace(/["']+$/g, '').trim();
+
+    const extractSegment = (variants: string[]): string | null => {
+      const pattern = `\\\\b(?:${variants.join('|')})\\\\b\\\\s*[:=\\-]?\\\\s*((?:(?!${keywordsPattern}).)+)`;
+      const regex = new RegExp(pattern, 'i');
+      const match = regex.exec(compactPrompt);
+      if (!match) return null;
+      const raw = match[1]?.trim();
+      if (!raw) return null;
+      return sanitize(raw.replace(/[.;]*$/, '').trim());
+    };
+
+    const numberFrom = (segment: string | null): number | undefined => {
+      if (!segment) return undefined;
+      const match = segment.replace(/[$,]/g, ' ').match(/-?\\d+(?:\\.\\d+)?/);
+      if (!match) return undefined;
+      const value = Number(match[0]);
+      return Number.isFinite(value) ? value : undefined;
+    };
+
+    const wordsToNumbers: Record<string, number> = {
+      one: 1,
+      two: 2,
+      three: 3,
+      four: 4,
+      five: 5,
+      six: 6,
+      seven: 7,
+      eight: 8,
+      nine: 9,
+      ten: 10,
+      eleven: 11,
+      twelve: 12,
+    };
+
+    const quantityFrom = (segment: string | null): number | undefined => {
+      if (!segment) return undefined;
+      const numeric = numberFrom(segment);
+      if (numeric && numeric > 0) {
+        return Math.round(numeric);
+      }
+      const word = segment.trim().toLowerCase().match(/\\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\b/);
+      if (word && wordsToNumbers[word[1]]) {
+        return wordsToNumbers[word[1]];
+      }
+      return undefined;
+    };
+
+    const dateFrom = (segment: string | null): string | undefined => {
+      if (!segment) return undefined;
+      const iso = segment.match(/\\d{4}-\\d{2}-\\d{2}/);
+      if (iso) return iso[0];
+      const parsed = Date.parse(segment);
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed).toISOString().split('T')[0];
+      }
+      return undefined;
+    };
+
+    const findMatch = <T,>(list: T[], getName: (item: T) => string, target: string): T | null => {
+      const desired = target.trim().toLowerCase();
+      if (!desired) return null;
+      const exact = list.find(item => getName(item).toLowerCase() === desired);
+      if (exact) return exact;
+      const partial = list.find(item => getName(item).toLowerCase().includes(desired));
+      if (partial) return partial;
+      return list.find(item => desired.includes(getName(item).toLowerCase())) || null;
+    };
+
+    const findFuzzy = <T,>(list: T[], getName: (item: T) => string, preference?: string): T | null => {
+      let best: { item: T; score: number } | null = null;
+      const preferenceTokens = preference ? tokensFromText(preference) : null;
+
+      list.forEach(item => {
+        const name = getName(item);
+        if (!name) return;
+        const normalizedName = normalizeText(name);
+        if (!normalizedName) return;
+        const nameTokens = tokensFromText(name);
+
+        let score = 0;
+        if (normalizedPrompt.includes(normalizedName)) {
+          score += 60;
+        }
+        if (preference) {
+          const normalizedPreference = normalizeText(preference);
+          if (normalizedPreference.includes(normalizedName)) {
+            score += 40;
+          }
+          if (normalizedName.includes(normalizedPreference)) {
+            score += 25;
+          }
+        }
+        if (nameTokens.length) {
+          const matchedPromptTokens = nameTokens.filter(token => promptTokens.includes(token));
+          if (matchedPromptTokens.length) {
+            score += matchedPromptTokens.length * 15;
+            if (matchedPromptTokens.length === nameTokens.length) {
+              score += 20;
+            }
+          }
+          if (preferenceTokens && preferenceTokens.length) {
+            const matchedPreferenceTokens = nameTokens.filter(token => preferenceTokens.includes(token));
+            if (matchedPreferenceTokens.length) {
+              score += matchedPreferenceTokens.length * 12;
+              if (matchedPreferenceTokens.length === nameTokens.length) {
+                score += 15;
+              }
+            }
+          }
+        }
+
+        if (!score && nameTokens.length === 1) {
+          const token = nameTokens[0];
+          if (token.length >= 3) {
+            const partial = token.slice(0, Math.max(2, Math.ceil(token.length / 2)));
+            const regex = new RegExp(`\\b${partial}`, 'i');
+            if (regex.test(preference || compactPrompt)) {
+              score += 10;
+            }
+          }
+        }
+
+        if (score > (best?.score ?? 0)) {
+          best = { item, score };
+        }
+      });
+
+      if (best && best.score >= 20) {
+        return best.item;
+      }
+      return null;
+    };
+
+    const clientSegment = extractSegment(['client', 'customer', 'buyer']);
+    const productSegment = extractSegment(['product', 'item', 'sku']);
+
+    const client =
+      (clientSegment ? findMatch<Client>(clients, c => c.name, clientSegment) : null)
+      ?? findFuzzy<Client>(clients, c => c.name, clientSegment || compactPrompt);
+    if (!client) {
+      const suggestion = clients.length === 1
+        ? `Try mentioning "${clients[0].name}".`
+        : 'Mention the client name the way it appears in the Clients tab.';
+      throw new Error(`I could not detect which client this order belongs to. ${suggestion}`);
+    }
+
+    const product =
+      (productSegment ? findMatch<Product>(products, p => p.name, productSegment) : null)
+      ?? findFuzzy<Product>(products, p => p.name, productSegment || compactPrompt);
+    if (!product) {
+      const suggestion = products.length === 1
+        ? `Try referencing "${products[0].name}".`
+        : 'Mention the product name as it appears in the Products tab.';
+      throw new Error(`I could not detect the product. ${suggestion}`);
+    }
+
+    const quantity = quantityFrom(extractSegment(['quantity', 'qty', 'amount', 'units'])) || 1;
+    if (quantity <= 0) {
+      throw new Error('Quantity must be at least 1.');
+    }
+
+    const priceSegment = extractSegment(['price', 'cost', 'rate', 'total']);
+    const shipping = Math.max(0, numberFrom(extractSegment(['shipping', 'delivery', 'ship'])) ?? 0);
+    const amountPaid = Math.max(0, numberFrom(extractSegment(['paid', 'payment', 'deposit'])) ?? 0);
+    const discount = Math.max(0, numberFrom(extractSegment(['discount', 'promo', 'rebate'])) ?? 0);
+    const notes = extractSegment(['notes', 'note', 'memo']) || undefined;
+    const paymentDueDate = dateFrom(extractSegment(['due', 'deadline', 'paymentdue', 'duedate']));
+
+    const priceValue = numberFrom(priceSegment);
+    const priceSegmentLower = priceSegment ? priceSegment.toLowerCase() : '';
+    const interpretAsEach = Boolean(priceSegmentLower && /\beach\b/.test(priceSegmentLower));
+
+    let linePrice = priceValue != null
+      ? (interpretAsEach ? priceValue * quantity : priceValue)
+      : undefined;
+
+    if (linePrice == null || Number.isNaN(linePrice)) {
+      const computedPrice = calculateTieredPrice(product.tiers, quantity, product.costPerUnit);
+      if (computedPrice > 0) {
+        linePrice = computedPrice;
+      }
+      if ((linePrice == null || Number.isNaN(linePrice) || linePrice <= 0) && product.costPerUnit) {
+        linePrice = Math.round(product.costPerUnit * quantity * 100) / 100;
+      }
+    }
+
+    if (linePrice == null || Number.isNaN(linePrice) || linePrice <= 0) {
+      throw new Error('I could not determine a price. Include something like "price: $180" or add pricing info to the product.');
+    }
+
+    const unitPrice = quantity ? linePrice / quantity : linePrice;
+
+    return {
+      client,
+      product,
+      quantity,
+      linePrice,
+      unitPrice,
+      shipping,
+      amountPaid,
+      discount,
+      notes,
+      paymentDueDate,
+      prompt: compactPrompt,
+    };
+  }, [clients, products]);
+
+  const handleAssistantGenerate = useCallback(() => {
+    setAssistantError(null);
+    setAssistantBusy(true);
+    try {
+      const draft = parsePromptToDraft(assistantPrompt);
+      setAssistantDraft(draft);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'I was unable to understand that request.';
+      setAssistantDraft(null);
+      setAssistantError(message);
+    } finally {
+      setAssistantBusy(false);
+    }
+  }, [assistantPrompt, parsePromptToDraft]);
 
   // Client and Order data aggregation
   const clientDataWithStats = useMemo(() => {
@@ -1659,8 +2274,14 @@ export const App: React.FC = () => {
 
     const unpaidOrders = orders.filter(o => (o.total - (o.amountPaid || 0)) > 0);
     const totalDebt = unpaidOrders.reduce((sum, o) => sum + (o.total - (o.amountPaid || 0)), 0);
+    const totalClients = clients.length;
+    const totalProducts = products.length;
+    const totalOrders = orders.length;
 
     return [
+        { label: 'Total Clients', value: totalClients.toLocaleString() },
+        { label: 'Total Products', value: totalProducts.toLocaleString() },
+        { label: 'Total Orders', value: totalOrders.toLocaleString() },
         { label: 'Total Inventory Retail Value', value: `$${Math.round(inventoryValue).toLocaleString()}` },
         { label: 'Total Inventory Cost', value: `$${Math.round(inventoryCost).toLocaleString()}` },
         { label: 'Sales Today', value: `$${Math.round(salesToday).toLocaleString()}`, subtext: `${ordersToday.length} ${ordersToday.length === 1 ? 'order' : 'orders'}` },
@@ -1668,7 +2289,7 @@ export const App: React.FC = () => {
         { label: 'Sales This Week', value: `$${Math.round(salesThisWeek).toLocaleString()}`, subtext: 'Since Sunday' },
         { label: 'Sales This Month', value: `$${Math.round(salesThisMonth).toLocaleString()}`, subtext: `In ${new Date().toLocaleString('default', { month: 'long' })}` },
     ];
-  }, [products, orders, inventoryValue, inventoryCost]);
+  }, [clients, products, orders, inventoryValue, inventoryCost]);
 
   // Event handlers
   const handleLogin = (username: string) => {
@@ -1686,12 +2307,28 @@ export const App: React.FC = () => {
   // Homepage uses the regular search bar in header
 
   const handleCreateOrder = async (orderData: Omit<Order, 'id' | 'total' | 'status' | 'displayId'>) => {
+    const amountPaid = Number(orderData.amountPaid) || 0;
     const itemsTotal = orderData.items.reduce((sum, item) => sum + item.price, 0);
     const total = itemsTotal + (orderData.fees.amount || 0) - (orderData.discount.amount || 0);
-    const status: 'Unpaid' | 'Completed' = orderData.amountPaid >= total ? 'Completed' : 'Unpaid';
+    const status: 'Unpaid' | 'Completed' = amountPaid >= total ? 'Completed' : 'Unpaid';
+    const dueDateRaw = typeof orderData.paymentDueDate === 'string' ? orderData.paymentDueDate.trim() : '';
+    const dueFromMethods = typeof orderData.paymentMethods?.dueDate === 'string' ? orderData.paymentMethods.dueDate.trim() : '';
+    const outstanding = total - amountPaid;
+    const normalizedDueDate = outstanding > 0 ? (dueDateRaw || dueFromMethods || undefined) : undefined;
+    const paymentMethods: PaymentMethods = {
+      cash: Number(orderData.paymentMethods.cash) || 0,
+      etransfer: Number(orderData.paymentMethods.etransfer) || 0,
+      ...(normalizedDueDate ? { dueDate: normalizedDueDate } : {}),
+    };
+    const payload = {
+      ...orderData,
+      amountPaid,
+      paymentMethods,
+      paymentDueDate: normalizedDueDate,
+    };
     
     if (isSupabaseEnabled) {
-      const inserted = await createOrderNormalized({ ...orderData, total, status });
+      const inserted = await createOrderNormalized({ ...payload, total, status });
       if (inserted) {
         setOrders(prev => [inserted, ...prev]);
         // Update product stock (front-end managed as before)
@@ -1717,7 +2354,7 @@ export const App: React.FC = () => {
 
     // Fallback (local/Option A)
     const newOrder: Order = {
-      ...orderData,
+      ...payload,
       id: `ord-${(orders.length + 1).toString().padStart(4, '0')}`,
       displayId: getNextDisplayId('order'),
       total,
@@ -1748,6 +2385,58 @@ export const App: React.FC = () => {
     void addLog('Order Created', { orderId: newOrder.id, orderDisplayId: newOrder.displayId, client: newOrder.clientId, total: newOrder.total });
     setCreateOrderModalOpen(false);
   };
+
+  const handleAssistantCreate = useCallback(async () => {
+    if (!assistantDraft) return;
+    setAssistantBusy(true);
+    setAssistantError(null);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const linePrice = Number(assistantDraft.linePrice.toFixed(2));
+      const sizeLabel = assistantDraft.product.type === 'unit'
+        ? `${assistantDraft.quantity} units`
+        : `${assistantDraft.quantity}${assistantDraft.product.type}`;
+      await handleCreateOrder({
+        clientId: assistantDraft.client.id,
+        items: [
+          {
+            productId: assistantDraft.product.id,
+            quantity: assistantDraft.quantity,
+            price: linePrice,
+            sizeLabel,
+          },
+        ],
+        date: today,
+        notes: assistantDraft.notes,
+        amountPaid: assistantDraft.amountPaid,
+        paymentMethods: {
+          cash: assistantDraft.amountPaid,
+          etransfer: 0,
+          ...(assistantDraft.paymentDueDate ? { dueDate: assistantDraft.paymentDueDate } : {}),
+        },
+        fees: {
+          amount: assistantDraft.shipping,
+          description: assistantDraft.shipping ? 'Shipping' : '',
+        },
+        discount: {
+          amount: assistantDraft.discount,
+          description: assistantDraft.discount ? 'Assistant Discount' : '',
+        },
+        paymentDueDate: assistantDraft.paymentDueDate,
+      });
+      void addLog('Assistant Order Created', {
+        clientId: assistantDraft.client.id,
+        productId: assistantDraft.product.id,
+        prompt: assistantDraft.prompt,
+      });
+      handleCloseAssistant();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create the order.';
+      setAssistantError(message);
+    } finally {
+      setAssistantBusy(false);
+    }
+  }, [assistantDraft, handleCreateOrder, addLog, handleCloseAssistant]);
   
   const handleEditOrder = (originalOrder: Order, updatedData: Omit<Order, 'id'>) => {
     const stockChanges = new Map<string, number>();
@@ -1784,7 +2473,29 @@ export const App: React.FC = () => {
       }
     });
 
-    const updatedOrder: Order = { ...updatedData, id: originalOrder.id };
+    const amountPaid = Number(updatedData.amountPaid) || 0;
+    const outstanding = updatedData.total - amountPaid;
+    const normalizedDueDate =
+      outstanding > 0
+        ? (
+            (typeof updatedData.paymentDueDate === 'string' ? updatedData.paymentDueDate.trim() : '') ||
+            (typeof updatedData.paymentMethods?.dueDate === 'string' ? updatedData.paymentMethods.dueDate.trim() : '') ||
+            undefined
+          )
+        : undefined;
+    const paymentMethods: PaymentMethods = {
+      cash: Number(updatedData.paymentMethods.cash) || 0,
+      etransfer: Number(updatedData.paymentMethods.etransfer) || 0,
+      ...(normalizedDueDate ? { dueDate: normalizedDueDate } : {}),
+    };
+    const status: 'Unpaid' | 'Completed' = outstanding <= 0 ? 'Completed' : 'Unpaid';
+    const updatedOrder: Order = {
+      ...updatedData,
+      id: originalOrder.id,
+      status,
+      paymentDueDate: normalizedDueDate,
+      paymentMethods,
+    };
     setOrders(prev => prev.map(o => o.id === originalOrder.id ? updatedOrder : o));
     void upsertRow('orders', updatedOrder);
     addLog('Order Updated', { orderId: originalOrder.id });
@@ -1830,16 +2541,30 @@ export const App: React.FC = () => {
       if (o.id === markPaidOrderId) {
         const remaining = Math.max(0, o.total - (o.amountPaid || 0));
         const src: any = o.paymentMethods || {};
-        const pm = {
+        const paymentMethods: PaymentMethods = {
           cash: typeof src.cash === 'number' ? src.cash : (src.cash ? (o.amountPaid || 0) : 0),
           etransfer: typeof src.etransfer === 'number' ? src.etransfer : (src.etransfer ? (o.amountPaid || 0) : 0),
-        } as any;
+        };
         const delta = Math.round(Math.min(Math.max(0, amount || 0), remaining || (amount || 0)));
-        if (method === 'cash') pm.cash = (pm.cash || 0) + delta;
-        if (method === 'etransfer') pm.etransfer = (pm.etransfer || 0) + delta;
-        const newAmountPaid = Math.round((pm.cash || 0) + (pm.etransfer || 0));
+        if (method === 'cash') paymentMethods.cash = (paymentMethods.cash || 0) + delta;
+        if (method === 'etransfer') paymentMethods.etransfer = (paymentMethods.etransfer || 0) + delta;
+        const newAmountPaid = Math.round((paymentMethods.cash || 0) + (paymentMethods.etransfer || 0));
         const newStatus: 'Unpaid' | 'Completed' = newAmountPaid >= o.total ? 'Completed' : 'Unpaid';
-        const updated: Order = { ...o, amountPaid: newAmountPaid, status: newStatus, paymentMethods: pm };
+        const existingDueDate =
+          typeof o.paymentDueDate === 'string' && o.paymentDueDate.trim().length
+            ? o.paymentDueDate.trim()
+            : (typeof src.dueDate === 'string' && src.dueDate.trim().length ? src.dueDate.trim() : undefined);
+        const normalizedDueDate = newStatus === 'Completed' ? undefined : existingDueDate;
+        if (normalizedDueDate) {
+          paymentMethods.dueDate = normalizedDueDate;
+        }
+        const updated: Order = {
+          ...o,
+          amountPaid: newAmountPaid,
+          status: newStatus,
+          paymentMethods,
+          paymentDueDate: normalizedDueDate,
+        };
         addLog('Order Payment Recorded', { orderId: updated.id, method, amount: delta });
         void upsertRow('orders', updated);
         return updated;
@@ -1974,6 +2699,35 @@ export const App: React.FC = () => {
     setAddStockModalOpen(false);
   };
 
+  const handleSetProductStocks = (changes: { productId: string; stock: number }[]) => {
+    if (!changes.length) return;
+    const changeMap = new Map<string, number>();
+    changes.forEach(({ productId, stock }) => {
+      if (Number.isFinite(stock)) {
+        changeMap.set(productId, stock);
+      }
+    });
+    if (!changeMap.size) return;
+
+    const updatedProducts: Product[] = [];
+    setProducts(prev => prev.map(product => {
+      const nextStock = changeMap.get(product.id);
+      if (nextStock === undefined) return product;
+      const normalizedStock =
+        product.type === 'unit'
+          ? Math.max(0, Math.round(nextStock))
+          : Math.max(0, Math.round(nextStock * 100) / 100);
+      const updated = { ...product, stock: normalizedStock, inactive: normalizedStock <= 0 };
+      updatedProducts.push(updated);
+      return updated;
+    }));
+
+    updatedProducts.forEach(updated => {
+      void upsertRow('products', updated);
+      void addLog('Stock Set Inline', { productId: updated.id, newStock: updated.stock });
+    });
+  };
+
   const handleCreateExpense = async (expenseData: Omit<Expense, 'id' | 'displayId' | 'sortIndex'>) => {
     if (isSupabaseEnabled) {
       const inserted = await createExpenseNormalized(expenseData);
@@ -2025,6 +2779,41 @@ export const App: React.FC = () => {
 
     setConfirmationModalOpen(false);
     showAlert("Success", "All application data has been permanently deleted.");
+  };
+
+  const handleResetDemoData = () => {
+    const demoSnapshot = JSON.parse(JSON.stringify({
+      clients: initialClients,
+      products: initialProducts,
+      orders: initialOrders,
+      expenses: initialExpenses,
+      logs: initialLogs,
+    })) as {
+      clients: Client[];
+      products: Product[];
+      orders: Order[];
+      expenses: Expense[];
+      logs: LogEntry[];
+    };
+
+    setClients(demoSnapshot.clients);
+    setProducts(demoSnapshot.products);
+    setOrders(demoSnapshot.orders);
+    setExpenses(demoSnapshot.expenses);
+    setLogs(demoSnapshot.logs);
+
+    initCountersFromData({
+      maxClientDisplayId: demoSnapshot.clients.length ? Math.max(...demoSnapshot.clients.map(c => c.displayId || 0)) : 0,
+      maxProductDisplayId: demoSnapshot.products.length ? Math.max(...demoSnapshot.products.map(p => p.displayId || 0)) : 0,
+      maxOrderDisplayId: demoSnapshot.orders.length ? Math.max(...demoSnapshot.orders.map(o => o.displayId || 0)) : 0,
+      maxExpenseDisplayId: demoSnapshot.expenses.length ? Math.max(...demoSnapshot.expenses.map(e => e.displayId || 0)) : 0,
+    });
+
+    setDataSource('demo');
+    setConfirmationModalOpen(false);
+    void addLog('Demo Data Restored', { source: 'settings', previousSource: dataSource });
+    showAlert('Demo Data Restored', 'Sample records have been reloaded. Your current session now mirrors the bundled demo dataset.');
+    navigate('dashboard');
   };
 
   const handleExport = (type: 'all' | 'orders' | 'clients' | 'products' | 'expenses') => {
@@ -2094,7 +2883,7 @@ export const App: React.FC = () => {
               setLogs(data.logs);
               addLog('Data Imported', { fileName: file.name, source: 'user_upload' });
               showAlert("Import Successful", `Successfully imported data from ${file.name}.`);
-              setPage('dashboard'); // Navigate to dashboard to see results
+              navigate('dashboard'); // Navigate to dashboard to see results
             } else {
               throw new Error('Invalid JSON structure. The file does not appear to be a valid export file.');
             }
@@ -2174,6 +2963,15 @@ export const App: React.FC = () => {
     setConfirmationModalOpen(true);
   };
   
+  const openResetDemoConfirmation = () => {
+    setConfirmationAction({
+      onConfirm: handleResetDemoData,
+      title: 'Restore Demo Data?',
+      message: 'This will replace your current records with the bundled demo dataset. Any unsaved changes will be lost. Continue?'
+    });
+    setConfirmationModalOpen(true);
+  };
+  
   // Render logic
   const renderPage = () => {
     switch (page) {
@@ -2216,6 +3014,7 @@ export const App: React.FC = () => {
                     searchQuery={searchQuery} 
                     onProductClick={openEditProductModal}
                     onUpdateStock={openAddStockModal}
+                    onSaveStockInline={handleSetProductStocks}
                     isPrivateMode={isPrivateMode}
                 />;
       case 'transactions':
@@ -2233,12 +3032,13 @@ export const App: React.FC = () => {
       case 'settings':
          return (
            <SettingsPage
-             setPage={setPage}
+             setPage={navigate}
              onExport={handleExport as any}
              onImport={handleImportData}
              onSyncSupabase={handleSyncSupabase}
              onLogout={() => openDeleteConfirmation('logout')}
              onDeleteAllData={openDeleteAllDataConfirmation}
+             onResetDemoData={openResetDemoConfirmation}
              dataSource={dataSource}
              supabaseEnabled={isSupabaseEnabled}
            />
@@ -2258,9 +3058,9 @@ export const App: React.FC = () => {
   const isDashboardPage = page === 'dashboard';
   const isSettingsPage = page === 'settings';
   const showSecondarySearch = !isDashboardPage && !isSettingsPage;
-  const headerSearchContainerClass = 'relative glass flex items-center h-14 px-4 w-full sm:flex-1 sm:min-w-[280px]';
-  const headerSearchIconClass = 'mr-3 text-muted pointer-events-none';
-  const headerSearchInputClass = 'flex-1 bg-transparent border-none text-base text-primary placeholder:text-muted focus:outline-none focus:ring-0';
+  const headerSearchContainerClass = 'relative glass-effect rounded-2xl flex items-center h-14 px-5 w-full sm:flex-1 sm:min-w-[280px] shadow-glass';
+  const headerSearchIconClass = 'mr-3 text-white/70 pointer-events-none';
+  const headerSearchInputClass = 'flex-1 bg-transparent border-none text-base text-primary placeholder:text-white/50 focus:outline-none focus:ring-0';
   const headerAction = (() => {
     switch (page) {
       case 'orders':
@@ -2275,98 +3075,173 @@ export const App: React.FC = () => {
         return null;
     }
   })();
+  const iconButtonBase = 'glass-icon h-14 w-14 flex items-center justify-center rounded-2xl text-white/70 transition-all duration-200 hover:text-primary hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c141d]';
+  const activeIconClass = 'text-accent';
+  const headerPrimaryContent = (() => {
+    if (isDashboardPage) {
+      return (
+        <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+          <button
+            onClick={() => navigate('transactions')}
+            className="gloss-btn self-start sm:self-auto w-full sm:w-auto"
+          >
+            <ReceiptText size={18} />
+            <span>Transactions</span>
+          </button>
+          <div className={`${headerSearchContainerClass} sm:flex-1 sm:max-w-none`}>
+            <Search size={20} className={headerSearchIconClass} />
+            <input
+              type="text"
+              placeholder="Search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={headerSearchInputClass}
+            />
+          </div>
+        </div>
+      );
+    }
+    if (isSettingsPage) {
+      return (
+        <div className="flex w-full flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+          <button
+            onClick={() => navigate(backTarget)}
+            className="gloss-btn self-start sm:self-auto w-full sm:w-auto"
+            aria-label="Back to previous page"
+          >
+            <ArrowLeft size={18} />
+            <span>Back</span>
+          </button>
+          <div className={`${headerSearchContainerClass} sm:flex-1 sm:max-w-none`}>
+            <Search size={20} className={headerSearchIconClass} />
+            <input
+              type="text"
+              placeholder="Search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={headerSearchInputClass}
+            />
+          </div>
+        </div>
+      );
+    }
+    const controls: React.ReactElement[] = [];
+    if (headerAction) {
+      controls.push(
+        <button
+          key="action"
+          onClick={headerAction.onClick}
+          className="gloss-btn self-start sm:self-auto w-full sm:w-auto"
+        >
+          {headerAction.label}
+        </button>
+      );
+    }
+    if (showSecondarySearch) {
+      controls.push(
+        <div key="search" className={headerSearchContainerClass}>
+          <Search size={20} className={headerSearchIconClass} />
+          <input
+            type="text"
+            placeholder="Search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className={headerSearchInputClass}
+          />
+        </div>
+      );
+    }
+    if (!controls.length) {
+      return null;
+    }
+    return (
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+        {controls}
+      </div>
+    );
+  })();
+  const assistantButtonClass = `${iconButtonBase} ${isAssistantModalOpen ? activeIconClass : ''}`;
+  const calculatorButtonClass = `${iconButtonBase} ${isCalculatorModalOpen ? activeIconClass : ''}`;
+  const privateToggleClass = `${iconButtonBase} ${isPrivateMode ? activeIconClass : ''}`;
+  const settingsButtonClass = `${iconButtonBase} ${isSettingsPage ? activeIconClass : ''}`;
+  const backTarget = lastNonSettingsPage || 'dashboard';
+  const settingsButton = isSettingsPage ? null : (
+    <button
+      onClick={() => navigate('settings')}
+      className={`${settingsButtonClass} settings-btn`}
+      aria-label="Settings"
+      title="Settings"
+    >
+      <Settings size={24} />
+    </button>
+  );
 
   return (
-    <div className="min-h-screen w-full text-primary p-4 md:p-6 lg:p-8">
-      <div className="liquid-bg">
-        <div className="blob blob--a"></div>
-        <div className="blob blob--b"></div>
-        <div className="blob blob--c"></div>
-      </div>
-      
-      <div className="grid grid-cols-12 gap-6 relative z-10">
-        <main className="col-span-12 space-y-6 pb-28">
-          <div className="max-w-5xl mx-auto w-full space-y-8">
-            <header className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex flex-col gap-4 flex-grow min-w-0">
-                {isDashboardPage ? (
-                  <div className="w-full">
-                    <div className={`${headerSearchContainerClass} max-w-3xl mx-auto`}>
-                      <Search size={20} className={headerSearchIconClass} />
-                      <input
-                        type="text"
-                        placeholder="Search"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className={headerSearchInputClass}
-                      />
-                    </div>
-                  </div>
-                ) : isSettingsPage ? (
-                  <div className="flex flex-col gap-3">
-                    <h1 className="text-4xl font-bold text-primary tracking-tight">Settings</h1>
-                    <p className="text-muted mt-1">Manage your dashboard's data, preferences, and user session.</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
-                    {headerAction && (
-                      <button
-                        onClick={headerAction.onClick}
-                        className="gloss-btn self-start sm:self-auto w-full sm:w-auto"
-                      >
-                        {headerAction.label}
-                      </button>
-                    )}
-                    {showSecondarySearch && (
-                      <div className={headerSearchContainerClass}>
-                        <Search size={20} className={headerSearchIconClass} />
-                        <input
-                          type="text"
-                          placeholder="Search"
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          className={headerSearchInputClass}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-4 flex-shrink-0 self-start">
-                <button onClick={() => setCalculatorModalOpen(true)} className="glass h-14 w-14 flex items-center justify-center rounded-lg text-muted hover:text-primary transition-colors hover:bg-white/10" aria-label="Calculator"><Calculator size={28} /></button>
-                <button onClick={() => setIsPrivateMode(!isPrivateMode)} className={`glass h-14 w-14 flex items-center justify-center rounded-lg transition-colors hover:bg-white/10 ${isPrivateMode ? 'text-indigo-400' : 'text-muted hover:text-primary'}`} aria-label="Toggle Private Mode" title={isPrivateMode ? "Disable Private Mode" : "Enable Private Mode"}><EyeOff size={28} /></button>
-                <button onClick={() => setPage('settings')} className="glass h-14 w-14 flex items-center justify-center rounded-lg text-muted hover:text-primary transition-colors hover:bg-white/10 settings-btn" aria-label="Settings"><Settings size={28} /></button>
-              </div>
-            </header>
-          
+    <div className="relative min-h-screen w-full px-4 py-6 text-primary sm:px-6 lg:px-10">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 pb-28">
+        <section className="glass-effect animate-bloom rounded-3xl px-5 py-6 shadow-glass sm:px-8 sm:py-8 lg:px-10 lg:py-10">
+          <header className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-4 flex-grow">
+              {headerPrimaryContent}
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-4 self-start">
+              <button
+                onClick={handleOpenAssistant}
+                className={assistantButtonClass}
+                aria-label="Order Assistant"
+                title="Order Assistant"
+              >
+                <Bot size={24} />
+              </button>
+              <button
+                onClick={() => setCalculatorModalOpen(true)}
+                className={calculatorButtonClass}
+                aria-label="Calculator"
+                title="Calculator"
+              >
+                <Calculator size={24} />
+              </button>
+              <button
+                onClick={() => setIsPrivateMode(!isPrivateMode)}
+                className={privateToggleClass}
+                aria-label="Toggle Private Mode"
+                aria-pressed={isPrivateMode}
+                title={isPrivateMode ? 'Disable Private Mode' : 'Enable Private Mode'}
+              >
+                {isPrivateMode ? <EyeOff size={24} /> : <Eye size={24} />}
+              </button>
+              {settingsButton}
+            </div>
+          </header>
+
           <AnimatePresence mode="wait">
             <motion.div
               key={page}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              transition={{ duration: 0.2 }}
+              transition={{ duration: 0.25 }}
+              className="mt-8 space-y-8"
             >
-              <Suspense fallback={<div className="glass p-6">Loading...</div>}>
+              <Suspense fallback={<div className="glass-effect rounded-2xl p-6">Loading...</div>}>
                 {renderPage()}
               </Suspense>
             </motion.div>
           </AnimatePresence>
-          </div>
-        </main>
+        </section>
       </div>
 
-      <footer className="fixed bottom-0 left-0 right-0 p-3 z-40">
-         <div className="glass flex items-center justify-around p-1 rounded-2xl relative max-w-lg mx-auto">
-            <MobileNavItem icon={<Home size={24} />} active={page==='dashboard'} onClick={() => setPage('dashboard')} />
-            <MobileNavItem icon={<ShoppingCart size={24} />} active={page==='orders'} onClick={() => setPage('orders')} />
-            <div className="w-16 shrink-0" aria-hidden="true" />
-            <MobileNavItem icon={<Users size={24} />} active={page==='clients'} onClick={() => setPage('clients')} />
-            <MobileNavItem icon={<Box size={24} />} active={page==='products'} onClick={() => setPage('products')} />
-            <button onClick={() => setCreateOrderModalOpen(true)} className="gloss-btn mobile-fab" aria-label="New Order">
-                <Plus size={28} />
-            </button>
-         </div>
+      <footer className="fixed bottom-0 left-0 right-0 z-40 p-3">
+        <div className="glass-effect relative mx-auto flex max-w-lg items-center justify-around rounded-2xl p-1 shadow-glass">
+          <MobileNavItem icon={<Home size={24} />} active={page === 'dashboard'} onClick={() => navigate('dashboard')} />
+          <MobileNavItem icon={<ShoppingCart size={24} />} active={page === 'orders'} onClick={() => navigate('orders')} />
+          <div className="w-16 shrink-0" aria-hidden="true" />
+          <MobileNavItem icon={<Users size={24} />} active={page === 'clients'} onClick={() => navigate('clients')} />
+          <MobileNavItem icon={<Box size={24} />} active={page === 'products'} onClick={() => navigate('products')} />
+          <button onClick={() => setCreateOrderModalOpen(true)} className="gloss-btn mobile-fab" aria-label="New Order">
+            <Plus size={28} />
+          </button>
+        </div>
       </footer>
       
       <Suspense fallback={null}>
@@ -2400,6 +3275,18 @@ export const App: React.FC = () => {
         <LogDetailsModal isOpen={isLogDetailsModalOpen} onClose={() => setLogDetailsModalOpen(false)} logEntry={selectedLog} />
         <ConfirmationModal isOpen={isConfirmationModalOpen} onClose={() => setConfirmationModalOpen(false)} onConfirm={() => confirmationAction?.onConfirm()} title={confirmationAction?.title || ''} message={confirmationAction?.message || ''} />
         <AlertModal isOpen={isAlertModalOpen} onClose={() => setAlertModalOpen(false)} title={alertModalContent.title} message={alertModalContent.message} />
+        <AssistantModal
+          isOpen={isAssistantModalOpen}
+          onClose={handleCloseAssistant}
+          prompt={assistantPrompt}
+          onPromptChange={setAssistantPrompt}
+          isProcessing={isAssistantBusy}
+          errorMessage={assistantError}
+          preview={assistantPreview}
+          onGenerate={handleAssistantGenerate}
+          onCreate={handleAssistantCreate}
+          onReset={resetAssistantState}
+        />
         <CalculatorModal isOpen={isCalculatorModalOpen} onClose={() => setCalculatorModalOpen(false)} />
         <SessionTimeoutModal isOpen={isSessionTimeoutModalOpen} onClose={() => setSessionTimeoutModalOpen(false)} onLogout={() => { setSessionTimeoutModalOpen(false); /* add any logout logic if needed */ }} />
         <MarkPaidModal 

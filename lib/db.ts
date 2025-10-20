@@ -1,4 +1,4 @@
-import type { Client, Product, Order, Expense, LogEntry, OrderItem, ProductTier } from '../types';
+import type { Client, Product, Order, Expense, LogEntry, OrderItem, ProductTier, PaymentMethods } from '../types';
 import { supabase } from './supabase';
 
 type TableName = 'clients' | 'products' | 'orders' | 'expenses' | 'logs';
@@ -89,6 +89,20 @@ function fromDbOrder(row: any, items: any[]): Order {
     price: Number(i.line_price),
     sizeLabel: i.size_label ?? undefined,
   }));
+
+  const rawPaymentMethods = (row.payment_methods || {}) as Record<string, unknown>;
+  const paymentMethods: PaymentMethods = {
+    cash: Number(rawPaymentMethods.cash ?? 0) || 0,
+    etransfer: Number(rawPaymentMethods.etransfer ?? 0) || 0,
+  };
+  const rawDueDate = typeof rawPaymentMethods.dueDate === 'string' ? rawPaymentMethods.dueDate : undefined;
+  if (rawDueDate) {
+    paymentMethods.dueDate = rawDueDate;
+  }
+  const paymentDueDate = typeof row.payment_due_date === 'string' && row.payment_due_date.length
+    ? row.payment_due_date
+    : rawDueDate;
+
   return {
     id: String(row.id),
     displayId: row.display_id ?? undefined,
@@ -99,13 +113,36 @@ function fromDbOrder(row: any, items: any[]): Order {
     status: row.status,
     notes: row.notes ?? undefined,
     amountPaid: row.amount_paid != null ? Number(row.amount_paid) : undefined,
-    paymentMethods: row.payment_methods ?? { cash: 0, etransfer: 0 },
+    paymentMethods,
     fees: row.fees_json ?? { amount: 0, description: '' },
     discount: row.discount_json ?? { amount: 0, description: '' },
+    paymentDueDate: paymentDueDate ?? undefined,
   };
 }
 
 function toDbOrder(row: Partial<Order>) {
+  const basePaymentMethods = (row.paymentMethods as PaymentMethods | undefined) ?? undefined;
+  let paymentMethodsPayload: Record<string, unknown> | null = null;
+
+  const normalizedCash = Number(basePaymentMethods?.cash ?? 0) || 0;
+  const normalizedEtransfer = Number(basePaymentMethods?.etransfer ?? 0) || 0;
+  const effectiveDueDate =
+    typeof row.paymentDueDate === 'string' && row.paymentDueDate.length
+      ? row.paymentDueDate
+      : (typeof basePaymentMethods?.dueDate === 'string' && basePaymentMethods?.dueDate.length
+          ? basePaymentMethods.dueDate
+          : undefined);
+
+  if (basePaymentMethods || normalizedCash || normalizedEtransfer || effectiveDueDate) {
+    paymentMethodsPayload = {
+      cash: normalizedCash,
+      etransfer: normalizedEtransfer,
+    };
+    if (effectiveDueDate) {
+      paymentMethodsPayload.dueDate = effectiveDueDate;
+    }
+  }
+
   return {
     client_id: row.clientId,
     date: row.date,
@@ -114,7 +151,7 @@ function toDbOrder(row: Partial<Order>) {
     status: row.status,
     fees_json: row.fees ?? null,
     discount_json: row.discount ?? null,
-    payment_methods: row.paymentMethods ?? null,
+    payment_methods: paymentMethodsPayload,
     notes: row.notes ?? null,
   } as const;
 }
@@ -211,10 +248,25 @@ export async function fetchAllFromSupabase() {
     return null;
   }
 
+  const legacyOrders = ((orders.data as Order[]) ?? []).map(order => {
+    if (!order) return order;
+    const existingDue =
+      typeof (order as any).paymentDueDate === 'string' && (order as any).paymentDueDate.length
+        ? (order as any).paymentDueDate
+        : undefined;
+    if (existingDue) return order;
+    const payments = (order as any).paymentMethods as PaymentMethods | undefined;
+    const dueDate =
+      payments && typeof payments === 'object' && typeof (payments as any).dueDate === 'string' && (payments as any).dueDate.length
+        ? (payments as any).dueDate
+        : undefined;
+    return dueDate ? ({ ...order, paymentDueDate: dueDate } as Order) : order;
+  });
+
   return {
     clients: (clients.data as Client[]) ?? [],
     products: (products.data as Product[]) ?? [],
-    orders: (orders.data as Order[]) ?? [],
+    orders: legacyOrders,
     expenses: (expenses.data as Expense[]) ?? [],
     logs: (logs.data as LogEntry[]) ?? [],
   };
@@ -336,7 +388,29 @@ export async function upsertRow<T extends { id: string }>(table: TableName, row:
   }
 
   // Legacy Option A
-  const { data, error } = await tableFor(table).upsert(row as any).select().single();
+  const payload = (() => {
+    if (table !== 'orders') return row as any;
+    const { paymentDueDate, paymentMethods, ...rest } = row as any;
+    const nextPaymentMethods: Record<string, unknown> = {
+      cash: Number(paymentMethods?.cash ?? 0) || 0,
+      etransfer: Number(paymentMethods?.etransfer ?? 0) || 0,
+    };
+    const effectiveDue =
+      typeof paymentDueDate === 'string' && paymentDueDate.length
+        ? paymentDueDate
+        : (typeof paymentMethods?.dueDate === 'string' && paymentMethods.dueDate.length
+            ? paymentMethods.dueDate
+            : undefined);
+    if (effectiveDue) {
+      nextPaymentMethods.dueDate = effectiveDue;
+    }
+    return {
+      ...rest,
+      paymentMethods: nextPaymentMethods,
+    };
+  })();
+
+  const { data, error } = await tableFor(table).upsert(payload).select().single();
   if (error) {
     console.error(`Supabase upsert error in ${table}`, error);
     return undefined;

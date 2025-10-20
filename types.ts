@@ -49,6 +49,7 @@ export interface PaymentMethods {
   // Store amounts paid per method (in dollars)
   cash: number;        // e.g., 5 means $5 cash
   etransfer: number;   // e.g., 5 means $5 e-transfer
+  dueDate?: string | null;
 }
 
 export interface OrderAdjustment {
@@ -71,6 +72,7 @@ export interface Order {
   fees: OrderAdjustment;
   discount: OrderAdjustment;
   reconciled?: boolean;
+  paymentDueDate?: string;
 }
 
 export interface Metric {
